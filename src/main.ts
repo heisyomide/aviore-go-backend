@@ -20,6 +20,7 @@ async function bootstrap() {
       const allowedOrigins = [
         'http://localhost:3000',
         'http://10.149.182.178:3000',
+        'https://your-frontend-domain.vercel.app',
       ].filter(Boolean);
 
       if (!origin || allowedOrigins.indexOf(origin) !== -1) {

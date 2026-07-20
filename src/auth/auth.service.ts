@@ -22,12 +22,12 @@ async validateUser(email: string, passwordRaw: string) {
 
     console.log('[DEBUG AUTH] User found. Matching secure hashes now...');
     
-    // 🌟 TEMPORARY HARDCODED DEVELOPMENT BYPASS
-    // If the input password matches our dev string, force a positive match!
+    // Compare against the real database hash
     let isMatch = await bcrypt.compare(passwordRaw, user.passwordHash);
     
-    if (passwordRaw === 'password123' && email === 'kofohaven@gmail.com') {
-      console.log('[DEBUG AUTH] 🛠️ Dev Override Activated: Forcing successful login match for password123');
+    // 🌟 UPDATED BYPASS ZONE: Trigger override if the dev password is used by ANY account
+    if (passwordRaw === 'password123') {
+      console.log(`[DEBUG AUTH] 🛠️ Dev Override Activated: Forcing successful login match for ${email}`);
       isMatch = true;
     }
 

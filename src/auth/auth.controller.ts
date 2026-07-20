@@ -46,10 +46,13 @@ async register(
   return this.authService.login(user);
 }
 
-  @Post('login')
+@Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() body: { email: string; passwordRaw: string }) {
-    const user = await this.authService.validateUser(body.email, body.passwordRaw);
+  async login(@Body() body: { email: string; password?: string; passwordRaw?: string }) {
+    // 🌟 Safely capture either 'password' or 'passwordRaw' from the incoming request body
+    const inputPassword = body.password ?? body.passwordRaw ?? '';
+
+    const user = await this.authService.validateUser(body.email, inputPassword);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials provided');
     }

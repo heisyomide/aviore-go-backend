@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "esModuleInterop": true,
     "declaration": true,
     "removeComments": true,
@@ -19,6 +19,12 @@
     "noImplicitAny": false,
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false,
+    
+    /* Configures TS to look for absolute 'src/*' imports properly without using deprecated baseUrl */
+    "paths": {
+      "src/*": ["./src/*"]
+    },
+    
     "types": [
       "node",
       "jest",

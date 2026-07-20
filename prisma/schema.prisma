@@ -1,0 +1,677 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model IncidentLog {
+  id         String   @id @default(uuid())
+  shipmentId String
+  raisedById String
+  reason     String
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model User {
+  id           String @id @default(uuid())
+  email        String @unique
+  phoneNumber  String @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+
+  role             UserRole          @default(CUSTOMER)
+  status           IdentityStatus    @default(PENDING_VERIFICATION)
+  avatarUrl        String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  payments         Payment[]
+  businessProfile  BusinessProfile?
+  notifications    Notification[]
+  reviewsGiven     Review[]          @relation("CustomerReviews")
+  riderProfile     RiderProfile?
+  savedAddresses   SavedAddress[]
+  shipmentsSent    Shipment[]        @relation("CustomerShipments")
+  wallet           Wallet?
+
+  @@map("users")
+}
+
+model SavedAddress {
+  id         String      @id @default(uuid())
+  userId     String
+  label      String
+  type       AddressType @default(HOME)
+  street     String
+  city       String
+  state      String
+  country    String      @default("Nigeria")
+  postalCode String?
+  latitude   Float
+  longitude  Float
+  isDefault  Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("saved_addresses")
+}
+
+model RiderProfile {
+  id                 String  @id @default(uuid())
+  userId             String  @unique
+  nin                String? @unique
+  driversLicense     String? @unique
+  isOnline           Boolean @default(false)
+  ratingAverage      Float   @default(5.0)
+  currentHubId       String?
+  bankName           String?
+  transactionPinHash String?
+  bankCode           String?
+
+  accountNumber String?
+
+  accountName         String?
+  activeVehicleId     String?           @unique
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  completedDeliveries Int               @default(0)
+  trustScore          Int               @default(100)
+  reviewsReceived     Review[]          @relation("RiderReviews")
+  assignments         RiderAssignment[]
+  activeVehicle       Vehicle?          @relation("ActiveVehicle", fields: [activeVehicleId], references: [id])
+  currentHub          TransitHub?       @relation(fields: [currentHubId], references: [id])
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shipments           Shipment[]        @relation("RiderShipments")
+  ownedVehicles       Vehicle[]         @relation("VehicleOwner")
+  withdrawals         Withdrawal[]
+
+  @@index([currentHubId])
+  @@map("rider_profiles")
+}
+
+model RiderApplication {
+  id                    String                 @id @default(uuid())
+  userId                String?                // Keep optional
+  currentStep           Int                    @default(1)
+  status                RiderApplicationStatus @default(DRAFT)
+
+  /**
+   * STEP 1 (Added required basic account capture fields)
+   */
+  firstName             String?
+  lastName              String?
+  email                 String?
+  phoneNumber           String?
+  middleName            String?
+  referralCode          String?
+
+  /**
+   * STEP 2
+   */
+  dateOfBirth           DateTime?
+  gender                Gender?
+  residentialAddress    String?
+  state                 String?
+  city                  String?
+  localGovernment       String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  emergencyRelationship String?
+
+  /**
+   * STEP 3
+   */
+  idType                IdType?
+  idNumber              String?
+  idFrontUrl            String?
+  idBackUrl             String?
+  selfieUrl             String?
+
+  /**
+   * STEP 4
+   */
+  vehicleType           VehicleType?
+  plateNumber           String?
+  vehicleBrand          String?
+  vehicleModel          String?
+  vehicleColor          String?
+  vehicleYear           Int?
+  vehiclePhotoUrl       String?
+
+  /**
+   * STEP 5
+   */
+  driversLicenseUrl     String?
+  vehiclePaperUrl       String?
+  insuranceUrl          String?
+  roadWorthinessUrl     String?
+  profilePhotoUrl       String?
+
+  /**
+   * STEP 6
+   */
+  bankName              String?
+  bankCode              String?
+  accountNumber         String?
+  accountName           String?
+
+  /**
+   * Agreements
+   */
+  acceptedTerms          Boolean                @default(false)
+  acceptedCommission     Boolean                @default(false)
+  acceptedDeliveryPolicy Boolean                @default(false)
+
+  submittedAt            DateTime?
+  reviewedAt             DateTime?
+  reviewedBy             String?
+  rejectionReason        String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+}
+enum RiderApplicationStatus {
+  DRAFT
+  IN_PROGRESS
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum IdType {
+  NIN
+  DRIVERS_LICENSE
+  VOTERS_CARD
+  INTERNATIONAL_PASSPORT
+}
+
+model Vehicle {
+  id              String        @id @default(uuid())
+  ownerId         String
+  type            VehicleType   @default(MOTORCYCLE)
+  make            String
+  model           String
+  year            Int?
+  plateNumber     String        @unique
+  color           String?
+  insuranceExpiry DateTime?
+  isVerified      Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  activeRider     RiderProfile? @relation("ActiveVehicle")
+  owner           RiderProfile  @relation("VehicleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@map("vehicles")
+}
+
+model BusinessProfile {
+  id                  String     @id @default(uuid())
+  userId              String     @unique
+  businessName        String     @unique
+  registrationNumber  String?    @unique
+  logoUrl             String?
+  website             String?
+  marketplaceStoreId  String?    @unique
+  isMarketplaceVendor Boolean    @default(false)
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shipments           Shipment[] @relation("BusinessShipments")
+
+  @@map("business_profiles")
+}
+
+model TransitHub {
+  id           String         @id @default(uuid())
+  name         String         @unique
+  street       String
+  city         String
+  state        String
+  latitude     Float
+  longitude    Float
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  riders       RiderProfile[]
+  hubShipments Shipment[]     @relation("HubLocation")
+
+  @@map("transit_hubs")
+}
+
+model Shipment {
+  id           String @id @default(uuid())
+  trackingCode String @unique
+
+  status ShipmentStatus @default(PENDING)
+  tier   DeliveryTier   @default(STANDARD)
+
+  // Customer
+  customerId String
+  customer   User   @relation("CustomerShipments", fields: [customerId], references: [id])
+
+  // Pickup
+  pickupAddress String
+  pickupLat     Float
+  pickupLng     Float
+  pickupPlaceId String
+
+  // Destination
+  destinationAddress String
+  destinationLat     Float
+  destinationLng     Float
+  destinationPlaceId String
+
+  riderLastLat       String?
+  riderLastLng       String?
+
+  // Delivery
+  deliveryType    DeliveryType
+  packageCategory PackageCategory
+  weightRange     WeightRange
+  regionType      RegionType
+
+  description     String?
+  recipient       String
+  recipientPhone  String
+  verificationPin String
+
+  isExpress      Boolean @default(false)
+  isFragile      Boolean @default(false)
+  waterproof     Boolean @default(false)
+  keepUpright    Boolean @default(false)
+  handleWithCare Boolean @default(false)
+
+  isSmartDelivery     Boolean  @default(false)
+  smartDeliveryPhotos String[]
+
+  specialNotes String?
+
+  // Pricing
+  baseFee         Decimal @db.Decimal(10, 2)
+  pickupDistFee   Decimal @db.Decimal(10, 2)
+  deliveryDistFee Decimal @db.Decimal(10, 2)
+  extraCharges    Decimal @db.Decimal(10, 2)
+
+  totalPrice    Decimal @db.Decimal(10, 2)
+  riderShare    Decimal @db.Decimal(10, 2)
+  platformShare Decimal @db.Decimal(10, 2)
+
+  distanceKm       Float
+  estimatedMinutes Int
+
+  // Optional business fields
+  businessId         String?
+  riderId            String?
+  currentHubId       String?
+  promoCodeId        String?
+  marketplaceOrderId String?   @unique
+  escrowReleaseAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  business   BusinessProfile? @relation("BusinessShipments", fields: [businessId], references: [id])
+  rider      RiderProfile?    @relation("RiderShipments", fields: [riderId], references: [id])
+  currentHub TransitHub?      @relation("HubLocation", fields: [currentHubId], references: [id])
+  promoCode  PromoCode?       @relation(fields: [promoCodeId], references: [id])
+
+  payments       Payment[]
+  reviews        Review[]
+  assignments    RiderAssignment[]
+  timelineEvents StatusTimeline[]
+  trackingLogs   TrackingLog[]
+
+  @@index([status])
+  @@index([customerId])
+  @@index([riderId])
+  @@map("shipments")
+}
+
+model RiderAssignment {
+  id         String           @id @default(uuid())
+  shipmentId String
+  riderId    String
+  status     AssignmentStatus @default(OFFERED)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  rider      RiderProfile     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  shipment   Shipment         @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@index([riderId])
+  @@map("rider_assignments")
+}
+
+model TrackingLog {
+  id         String   @id @default(uuid())
+  shipmentId String
+  latitude   Float
+  longitude  Float
+  bearing    Float?
+  createdAt  DateTime @default(now())
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId, createdAt(sort: Desc)])
+  @@map("tracking_logs")
+}
+
+model StatusTimeline {
+  id          String         @id @default(uuid())
+  shipmentId  String
+  status      ShipmentStatus
+  description String?
+  changedBy   String
+  createdAt   DateTime       @default(now())
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@map("status_timelines")
+}
+
+model Wallet {
+  id               String        @id @default(uuid())
+  userId           String        @unique
+  availableBalance Decimal       @default(0) @db.Decimal(12, 2)
+  pendingBalance   Decimal       @default(0) @db.Decimal(12, 2)
+  currency         String        @default("NGN")
+  updatedAt        DateTime      @updatedAt
+  withdrawals      Withdrawal[]
+  transactions     Transaction[]
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id            String          @id @default(uuid())
+  walletId      String
+  amount        Decimal         @db.Decimal(12, 2)
+  type          TransactionType
+  category      LedgerCategory
+  referenceCode String          @unique
+  description   String
+  createdAt     DateTime        @default(now())
+  wallet        Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  WithdrawalId  String?
+
+  @@index([walletId])
+  @@map("transactions")
+}
+
+model PromoCode {
+  id           String     @id @default(uuid())
+  code         String     @unique
+  discount     Decimal    @db.Decimal(10, 2)
+  isPercentage Boolean    @default(false)
+  expiryDate   DateTime
+  usageLimit   Int        @default(100)
+  usedCount    Int        @default(0)
+  isActive     Boolean    @default(true)
+  shipments    Shipment[]
+
+  @@map("promo_codes")
+}
+
+
+model GlobalConfig {
+  id          String   @id @default(uuid())
+  key         String   @unique // e.g., "BIKE_BASE_FEE", "PLATFORM_COMMISSION_PCT"
+  value       String   // Text-encoded value to support dynamic strings, floats, or numbers safely
+  description String?
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+  @@map("global_configs")
+}
+
+model BroadcastLog {
+  id             String    @id @default(uuid())
+  targetAudience UserRole? // If null, broadcasts to all platforms and applications globally
+  title          String
+  body           String    @db.Text
+  channel        ChannelType @default(IN_APP)
+  sentById       String
+  createdAt      DateTime  @default(now())
+
+  @@index([targetAudience])
+  @@map("broadcast_logs")
+}
+
+model Review {
+  id         String       @id @default(uuid())
+  shipmentId String
+  reviewerId String
+  riderId    String
+  rating     Int
+  comment    String?
+  createdAt  DateTime     @default(now())
+  reviewer   User         @relation("CustomerReviews", fields: [reviewerId], references: [id], onDelete: Cascade)
+  rider      RiderProfile @relation("RiderReviews", fields: [riderId], references: [id], onDelete: Cascade)
+  shipment   Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([riderId])
+  @@map("reviews")
+}
+
+model Notification {
+  id        String      @id @default(uuid())
+  userId    String
+  title     String
+  body      String
+  channel   ChannelType @default(IN_APP)
+  isRead    Boolean     @default(false)
+  createdAt DateTime    @default(now())
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid())
+  creatorId   String
+  subject     String
+  description String
+  status      String   @default("OPEN")
+  priority    String   @default("MEDIUM")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("support_tickets")
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  shipmentId      String
+  customerId      String
+  gateway         String
+  txRef           String        @unique
+  flutterwaveTxId String?
+  flutterwaveRef  String?
+  amount          Decimal       @db.Decimal(12, 2)
+  currency        String        @default("NGN")
+  status          PaymentStatus @default(PENDING)
+  paymentMethod   String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  customer        User          @relation(fields: [customerId], references: [id])
+  shipment        Shipment      @relation(fields: [shipmentId], references: [id])
+}
+
+model Withdrawal {
+  id String @id @default(cuid())
+
+  walletId String
+
+  riderId String
+
+  amount Decimal @db.Decimal(12, 2)
+
+  bankName      String
+  bankCode      String
+  accountNumber String
+  accountName   String
+
+  flutterwaveReference String?
+  flutterwaveId        String?
+
+  rejectionReason String?
+
+  approvedBy String?
+  approvedAt DateTime?
+
+  completedAt DateTime?
+
+  status WithdrawalStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id])
+
+  rider RiderProfile @relation(fields: [riderId], references: [id])
+}
+
+enum PackageCategory {
+  SMALL_PARCEL
+  MEDIUM_PARCEL
+  LARGE_PARCEL
+  FRAGILE_ITEM
+  CLOTHING
+  ELECTRONICS
+}
+
+enum WeightRange {
+  UNDER_1KG
+  FROM_1_3KG
+  FROM_3_5KG
+  FROM_5_10KG
+  FROM_10_20KG
+  ABOVE_20KG
+}
+
+enum RegionType {
+  INTRA_CITY
+  INTRA_STATE
+  INTERSTATE
+}
+
+enum UserRole {
+  CUSTOMER
+  BUSINESS_OWNER
+  RIDER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum IdentityStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum VehicleType {
+  BICYCLE
+  MOTORCYCLE
+  CAR
+  VAN
+  TRICYCLE
+}
+
+enum AddressType {
+  HOME
+  OFFICE
+  WAREHOUSE
+  PICKUP_POINT
+}
+
+enum ShipmentStatus {
+  PENDING
+  ACCEPTED
+  PICKED_UP
+  IN_TRANSIT
+  ARRIVED_AT_HUB
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  RETURNED
+  DISPUTED
+}
+
+enum DeliveryTier {
+  STANDARD
+  EXPRESS
+  SAME_DAY
+  INTERSTATE
+}
+
+enum DeliverySpeed {
+  STANDARD
+  EXPRESS
+}
+
+enum DeliveryType {
+  PARCEL
+  FOOD
+  GROCERY
+  PHARMACY
+  DOCUMENT
+}
+
+enum AssignmentStatus {
+  OFFERED
+  ACCEPTED
+  REJECTED
+  TIMED_OUT
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  REJECTED
+}
+
+enum LedgerCategory {
+  DELIVERY_PAYMENT
+  RIDER_EARNINGS
+  PLATFORM_COMMISSION
+  WALLET_TOPUP
+  WITHDRAWAL
+  INSURANCE_PREMIUM
+  PROMO_DISCOUNT
+  CASH_COLLECTION_REMITTANCE
+}
+
+enum ChannelType {
+  IN_APP
+  PUSH
+  SMS
+  EMAIL
+}

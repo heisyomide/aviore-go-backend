@@ -1,0 +1,17 @@
+export enum RiderApplicationStatus {
+  DRAFT = 'DRAFT',
+
+  SUBMITTED = 'SUBMITTED',
+
+  UNDER_REVIEW = 'UNDER_REVIEW',
+
+  KYC_PENDING = 'KYC_PENDING',
+
+  KYC_VERIFIED = 'KYC_VERIFIED',
+
+  APPROVED = 'APPROVED',
+
+  REJECTED = 'REJECTED',
+
+  SUSPENDED = 'SUSPENDED',
+}

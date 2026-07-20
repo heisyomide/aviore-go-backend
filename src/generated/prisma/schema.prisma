@@ -1,0 +1,441 @@
+// =========================================================================
+// AVIORÈ GO - MASTER CONFIGURATION
+// =========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =========================================================================
+// GLOBAL ENUMS
+// =========================================================================
+
+enum UserRole {
+  CUSTOMER
+  BUSINESS_OWNER
+  RIDER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum IdentityStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum VehicleType {
+  BICYCLE
+  MOTORBIKE
+  CAR
+  MINIVAN
+  TRUCK
+}
+
+enum AddressType {
+  HOME
+  OFFICE
+  WAREHOUSE
+  PICKUP_POINT
+}
+
+enum ShipmentStatus {
+  PENDING // Searching for nearby rider
+  ACCEPTED // Rider heading to pickup location
+  PICKED_UP // Rider has collected the package
+  IN_TRANSIT // Package moving to drop-off / transit hub
+  ARRIVED_AT_HUB // Stored at regional cross-dock for interstate movement
+  OUT_FOR_DELIVERY // Last-mile rider executing final leg
+  DELIVERED // Completed successfully
+  CANCELLED
+  RETURNED // Failed delivery returned to source
+}
+
+enum DeliveryTier {
+  STANDARD // 2-4 Hours / Next Day
+  EXPRESS // 30-60 Mins instant dispatch
+  SAME_DAY // Within the same calendar day
+  INTERSTATE // Multi-hub regional transit
+}
+
+enum AssignmentStatus {
+  OFFERED
+  ACCEPTED
+  REJECTED
+  TIMED_OUT
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum LedgerCategory {
+  DELIVERY_PAYMENT
+  RIDER_EARNINGS
+  PLATFORM_COMMISSION
+  WALLET_TOPUP
+  WITHDRAWAL
+  INSURANCE_PREMIUM
+  PROMO_DISCOUNT
+  CASH_COLLECTION_REMITTANCE
+}
+
+enum ChannelType {
+  IN_APP
+  PUSH
+  SMS
+  EMAIL
+}
+
+// =========================================================================
+// PART 1: IDENTITY & CORE USER SEGMENTATION
+// =========================================================================
+
+model User {
+  id           String         @id @default(uuid())
+  email        String         @unique
+  phoneNumber  String         @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         UserRole       @default(CUSTOMER)
+  status       IdentityStatus @default(PENDING_VERIFICATION)
+  avatarUrl    String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  // Core Relations
+  savedAddresses  SavedAddress[]
+  riderProfile    RiderProfile?
+  businessProfile BusinessProfile?
+  wallet          Wallet?
+  shipmentsSent   Shipment[]       @relation("CustomerShipments")
+  reviewsGiven    Review[]         @relation("CustomerReviews")
+  notifications   Notification[]
+
+  @@map("users")
+}
+
+model SavedAddress {
+  id         String      @id @default(uuid())
+  userId     String
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label      String // e.g., "Main Warehouse", "Ibadan Hub"
+  type       AddressType @default(HOME)
+  street     String
+  city       String // e.g., "Osogbo", "Ibadan"
+  state      String // e.g., "Osun", "Oyo"
+  country    String      @default("Nigeria")
+  postalCode String?
+  latitude   Float
+  longitude  Float
+  isDefault  Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([userId])
+  @@map("saved_addresses")
+}
+
+model RiderProfile {
+  id             String  @id @default(uuid())
+  userId         String  @unique
+  user           User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nin            String? @unique
+  driversLicense String? @unique
+  isOnline       Boolean @default(false)
+  ratingAverage  Float   @default(5.0)
+
+  // Logistics Network Hub Binding
+  currentHubId String?
+  currentHub   TransitHub? @relation(fields: [currentHubId], references: [id], onDelete: SetNull)
+
+  // Vehicles
+  activeVehicleId String?   @unique
+  activeVehicle   Vehicle?  @relation("ActiveVehicle", fields: [activeVehicleId], references: [id])
+  ownedVehicles   Vehicle[] @relation("VehicleOwner")
+
+  // Shipments & Dispatch
+  shipments       Shipment[]        @relation("RiderShipments")
+  assignments     RiderAssignment[]
+  reviewsReceived Review[]          @relation("RiderReviews")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([currentHubId])
+  @@map("rider_profiles")
+}
+
+model Vehicle {
+  id              String       @id @default(uuid())
+  ownerId         String
+  owner           RiderProfile @relation("VehicleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  type            VehicleType  @default(MOTORBIKE)
+  make            String // e.g., "Bajaj"
+  model           String // e.g., "Boxer"
+  year            Int?
+  plateNumber     String       @unique
+  color           String?
+  insuranceExpiry DateTime?
+  isVerified      Boolean      @default(false)
+
+  activeRider RiderProfile? @relation("ActiveVehicle")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("vehicles")
+}
+
+model BusinessProfile {
+  id                 String  @id @default(uuid())
+  userId             String  @unique
+  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName       String  @unique
+  registrationNumber String? @unique
+  logoUrl            String?
+  website            String?
+
+  // Integration hooks for Aviorè Marketplace Architecture
+  marketplaceStoreId  String? @unique
+  isMarketplaceVendor Boolean @default(false)
+
+  shipments Shipment[] @relation("BusinessShipments")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("business_profiles")
+}
+
+// =========================================================================
+// PART 2: CORE DELIVERY ENGINE & INFRASTRUCTURE MAPS
+// =========================================================================
+
+model TransitHub {
+  id           String         @id @default(uuid())
+  name         String         @unique // e.g., "Ibadan Central Hub", "Osogbo Cross-Dock"
+  street       String
+  city         String
+  state        String
+  latitude     Float
+  longitude    Float
+  riders       RiderProfile[]
+  hubShipments Shipment[]     @relation("HubLocation")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("transit_hubs")
+}
+
+model Shipment {
+  id           String         @id @default(uuid())
+  trackingCode String         @unique // e.g., AG123456789
+  status       ShipmentStatus @default(PENDING)
+  tier         DeliveryTier   @default(STANDARD)
+
+  // Origin Details
+  pickupAddress String
+  pickupLat     Float
+  pickupLng     Float
+
+  // Destination Details
+  dropoffAddress String
+  dropoffLat     Float
+  dropoffLng     Float
+
+  // Package Metadata Specifications
+  packageType        String // e.g., "Document", "Food", "Electronics"
+  packageWeightClass String // e.g., "5kg or less", "Up to 20kg"
+  specialNotes       String?
+
+  // Specialized Service Overrides
+  isCashCollection Boolean @default(false)
+  codAmount        Decimal @default(0.00) @db.Decimal(10, 2)
+  isInsured        Boolean @default(false)
+  insurancePremium Decimal @default(0.00) @db.Decimal(10, 2)
+  isHouseMoving    Boolean @default(false)
+
+  // Financial Pricing Breakdown
+  baseFare      Decimal @db.Decimal(10, 2)
+  distanceFare  Decimal @db.Decimal(10, 2)
+  surgePremium  Decimal @default(0.00) @db.Decimal(10, 2)
+  totalPrice    Decimal @db.Decimal(10, 2)
+  riderShare    Decimal @db.Decimal(10, 2)
+  platformShare Decimal @db.Decimal(10, 2)
+
+  // Core Relationship Constraints
+  customerId String
+  customer   User   @relation("CustomerShipments", fields: [customerId], references: [id])
+
+  businessId String?
+  business   BusinessProfile? @relation("BusinessShipments", fields: [businessId], references: [id], onDelete: SetNull)
+
+  riderId String?
+  rider   RiderProfile? @relation("RiderShipments", fields: [riderId], references: [id], onDelete: SetNull)
+
+  currentHubId String?
+  currentHub   TransitHub? @relation("HubLocation", fields: [currentHubId], references: [id], onDelete: SetNull)
+
+  // System Cross-Reference Stub
+  marketplaceOrderId String? @unique // Maps directly to Aviorè Marketplace Order UUID
+
+  // Sub-Collections
+  assignments    RiderAssignment[]
+  trackingLogs   TrackingLog[]
+  timelineEvents StatusTimeline[]
+  reviews        Review[]
+  promoCodeId    String?
+  promoCode      PromoCode?        @relation(fields: [promoCodeId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([customerId])
+  @@index([riderId])
+  @@map("shipments")
+}
+
+model RiderAssignment {
+  id         String           @id @default(uuid())
+  shipmentId String
+  shipment   Shipment         @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  riderId    String
+  rider      RiderProfile     @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  status     AssignmentStatus @default(OFFERED)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@index([shipmentId])
+  @@index([riderId])
+  @@map("rider_assignments")
+}
+
+model TrackingLog {
+  id         String   @id @default(uuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  latitude   Float
+  longitude  Float
+  bearing    Float? // Heading direction of the rider
+  createdAt  DateTime @default(now())
+
+  @@index([shipmentId, createdAt(sort: Desc)])
+  @@map("tracking_logs")
+}
+
+model StatusTimeline {
+  id          String         @id @default(uuid())
+  shipmentId  String
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status      ShipmentStatus
+  description String? // e.g., "Arrived at Ring Road, Ibadan Hub"
+  changedBy   String // Identifier tracking the responsible entity (Admin ID, System, Rider ID)
+  createdAt   DateTime       @default(now())
+
+  @@index([shipmentId])
+  @@map("status_timelines")
+}
+
+// =========================================================================
+// PART 3: FINANCIAL LEDGERS & WALLETS (Strict Double-Entry Infrastructure)
+// =========================================================================
+
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance   Decimal  @default(0.00) @db.Decimal(12, 2)
+  currency  String   @default("NGN")
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id            String          @id @default(uuid())
+  walletId      String
+  wallet        Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  amount        Decimal         @db.Decimal(12, 2) // Always absolute positive value
+  type          TransactionType
+  category      LedgerCategory
+  referenceCode String          @unique // Core dynamic reference tracing external processors (Paystack/Flutterwave)
+  description   String
+  createdAt     DateTime        @default(now())
+
+  @@index([walletId])
+  @@map("transactions")
+}
+
+model PromoCode {
+  id           String     @id @default(uuid())
+  code         String     @unique // e.g., "AVIREGOGO"
+  discount     Decimal    @db.Decimal(10, 2) // Value amount or percentage modifier
+  isPercentage Boolean    @default(false)
+  expiryDate   DateTime
+  usageLimit   Int        @default(100)
+  usedCount    Int        @default(0)
+  isActive     Boolean    @default(true)
+  shipments    Shipment[]
+
+  @@map("promo_codes")
+}
+
+// =========================================================================
+// PART 4: OPERATIONAL ENGAGEMENT, VERIFICATION, & SUPPORT
+// =========================================================================
+
+model Review {
+  id         String       @id @default(uuid())
+  shipmentId String
+  shipment   Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  reviewerId String
+  reviewer   User         @relation("CustomerReviews", fields: [reviewerId], references: [id], onDelete: Cascade)
+  riderId    String
+  rider      RiderProfile @relation("RiderReviews", fields: [riderId], references: [id], onDelete: Cascade)
+  rating     Int // Constraint enforced via API validation (1 to 5)
+  comment    String?
+  createdAt  DateTime     @default(now())
+
+  @@index([riderId])
+  @@map("reviews")
+}
+
+model Notification {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  channel   ChannelType @default(IN_APP)
+  isRead    Boolean     @default(false)
+  createdAt DateTime    @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid())
+  creatorId   String
+  subject     String
+  description String
+  status      String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED
+  priority    String   @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("support_tickets")
+}

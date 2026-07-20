@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '.prisma/client';
 // ⚠️ Import dotenv here to catch early framework instantiation cycles
 import * as dotenv from 'dotenv';
 dotenv.config();

@@ -69,4 +69,14 @@ export class ShipmentsGateway implements OnGatewayConnection, OnGatewayDisconnec
       this.logger.error(`Failed to record tracking log for ${data.shipmentId}`, errorStack);
     }
   }
+
+  // Backend NestJS / Express Gateway example:
+@SubscribeMessage('rider:locationUpdate')
+handleRiderLocation(@MessageBody() data: { shipmentId: string; latitude: number; longitude: number }) {
+  // Must emit to the room room matching shipmentId
+  this.server.to(data.shipmentId).emit('tracking:update', {
+    latitude: data.latitude,
+    longitude: data.longitude,
+  });
+}
 }

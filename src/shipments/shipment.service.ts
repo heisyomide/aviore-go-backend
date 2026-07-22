@@ -36,95 +36,104 @@ export class ShipmentsService {
    * Main orchestrator pipeline creating a real-coordinate automated manifest waybill
    */
 async createShipment(customerId: string, dto: CreateShipmentDto) {
-    const trackingCode = await this.generateTrackingCode();
+  const trackingCode = await this.generateTrackingCode();
 
-    // 1. Invoke the step-by-step Pricing Engine using strict boolean fallbacks
-    const pricingResult = this.PricingService.calculate({
-      pickupLat: dto.pickupLat,
-      pickupLng: dto.pickupLng,
-      destinationLat: dto.destinationLat,
-      destinationLng: dto.destinationLng,
-      packageCategory: dto.packageCategory, 
-      weightRange: dto.weightRange,         
-      isExpress: dto.isExpress || false,   // Prevents type 'undefined'
-      waterproof: dto.waterproof || false, // Prevents type 'undefined'
-    });
+  // 1. Invoke the step-by-step Pricing Engine using strict boolean fallbacks
+  const pricingResult = this.PricingService.calculate({
+    pickupLat: dto.pickupLat,
+    pickupLng: dto.pickupLng,
+    destinationLat: dto.destinationLat,
+    destinationLng: dto.destinationLng,
+    packageCategory: dto.packageCategory, 
+    weightRange: dto.weightRange,         
+    isExpress: dto.isExpress || false,   // Prevents type 'undefined'
+    waterproof: dto.waterproof || false, // Prevents type 'undefined'
+  });
 
-    const totalPayable = pricingResult.totalDeliveryFee;
+  const totalPayable = pricingResult.totalDeliveryFee;
 
-    // 2. Financial split distributions (80/20 platform ledger share ratio)
-    const platformShare = totalPayable * 0.20;
-    const riderShare = totalPayable * 0.80;
-   console.log("Customer ID:", customerId)
+  // 2. Financial split distributions (80/20 platform ledger share ratio)
+  const platformShare = totalPayable * 0.20;
+  const riderShare = totalPayable * 0.80;
+
+  console.log("Customer ID:", customerId);
+
   const shipmentData = {
-  trackingCode,
-  deliveryType: dto.deliveryType,
-  packageCategory: dto.packageCategory,
-  weightRange: dto.weightRange,
-  description: dto.description || '',
+    trackingCode,
+    deliveryType: dto.deliveryType,
+    packageCategory: dto.packageCategory,
+    weightRange: dto.weightRange,
+    description: dto.description || '',
 
-  pickupAddress: dto.pickupAddress,
-  pickupLat: dto.pickupLat,
-  pickupLng: dto.pickupLng,
-  pickupPlaceId: dto.pickupPlaceId,
+    // Step 2: Pickup Metadata & Sender Info
+    pickupAddress: dto.pickupAddress,
+    pickupLandmark: dto.pickupLandmark || null, // Landmark saved for rider orientation
+    pickupLat: dto.pickupLat,
+    pickupLng: dto.pickupLng,
+    pickupPlaceId: dto.pickupPlaceId || null,   // Nullable for manual map pins
+    senderName: dto.senderName,
+    senderPhone: dto.senderPhone,
 
-  destinationAddress: dto.destinationAddress,
-  destinationLat: dto.destinationLat,
-  destinationLng: dto.destinationLng,
-  destinationPlaceId: dto.destinationPlaceId,
+    // Step 3: Destination Metadata & Recipient Info
+    destinationAddress: dto.destinationAddress,
+    destinationLandmark: dto.destinationLandmark || null, // Landmark saved for rider orientation
+    destinationLat: dto.destinationLat,
+    destinationLng: dto.destinationLng,
+    destinationPlaceId: dto.destinationPlaceId || null,   // Nullable for manual map pins
+    recipient: dto.receiverName,
+    recipientPhone: dto.receiverPhone,
 
-  regionType: pricingResult.detectedRegion,
+    regionType: pricingResult.detectedRegion,
 
-  isFragile: dto.isFragile || false,
-  keepUpright: dto.keepUpright || false,
-  handleWithCare: dto.handleWithCare || false,
-  waterproof: dto.waterproof || false,
-  isExpress: dto.isExpress || false,
+    // Step 4: Handling Flags
+    isFragile: dto.isFragile || false,
+    keepUpright: dto.keepUpright || false,
+    handleWithCare: dto.handleWithCare || false,
+    waterproof: dto.waterproof || false,
+    isExpress: dto.isExpress || false,
 
-  recipient: dto.receiverName,
-  recipientPhone: dto.receiverPhone,
+    isSmartDelivery: dto.deliveryMethod === 'smart',
+    specialNotes: dto.deliveryNote || '',
+    verificationPin: dto.verificationPin,
 
-  isSmartDelivery: dto.deliveryMethod === 'smart',
-  specialNotes: dto.deliveryNote || '',
-  verificationPin: dto.verificationPin,
+    // Financial Breakdown
+    baseFee: new Prisma.Decimal(pricingResult.breakdown.baseFee),
+    pickupDistFee: new Prisma.Decimal(pricingResult.breakdown.pickupDistanceFee),
+    deliveryDistFee: new Prisma.Decimal(pricingResult.breakdown.deliveryDistanceFee),
+    extraCharges: new Prisma.Decimal(pricingResult.breakdown.extraCharges),
+    totalPrice: new Prisma.Decimal(totalPayable),
+    riderShare: new Prisma.Decimal(riderShare),
+    platformShare: new Prisma.Decimal(platformShare),
 
-  baseFee: new Prisma.Decimal(pricingResult.breakdown.baseFee),
-  pickupDistFee: new Prisma.Decimal(pricingResult.breakdown.pickupDistanceFee),
-  deliveryDistFee: new Prisma.Decimal(pricingResult.breakdown.deliveryDistanceFee),
-  extraCharges: new Prisma.Decimal(pricingResult.breakdown.extraCharges),
-  totalPrice: new Prisma.Decimal(totalPayable),
-  riderShare: new Prisma.Decimal(riderShare),
-  platformShare: new Prisma.Decimal(platformShare),
+    distanceKm: pricingResult.distanceKm,
+    estimatedMinutes: pricingResult.estimatedMinutes,
 
-  distanceKm: pricingResult.distanceKm,
-  estimatedMinutes: pricingResult.estimatedMinutes,
-
-  customer: {
-    connect: {
-      id: customerId,
+    customer: {
+      connect: {
+        id: customerId,
+      },
     },
-  },
 
-  timelineEvents: {
-    create: {
-      status: ShipmentStatus.PENDING,
-      description: `Shipment generated automatically via Pricing Engine. Zone: ${pricingResult.detectedRegion}`,
-      changedBy: 'CUSTOMER',
+    timelineEvents: {
+      create: {
+        status: ShipmentStatus.PENDING,
+        description: `Shipment generated automatically via Pricing Engine. Zone: ${pricingResult.detectedRegion}`,
+        changedBy: 'CUSTOMER',
+      },
     },
-  },
-};
+  };
 
-console.dir(shipmentData, { depth: null });
+  console.dir(shipmentData, { depth: null });
 
-const shipment = await this.prisma.shipment.create({
-  data: shipmentData,
-});
+  const shipment = await this.prisma.shipment.create({
+    data: shipmentData,
+  });
 
-await this.dispatchService.dispatchShipment(
-  shipment,
-);
+  await this.dispatchService.dispatchShipment(
+    shipment,
+  );
 
-return shipment;
+  return shipment;
 }
   /**
    * Aggregates live shipment counts to populate customer UI overview tiles

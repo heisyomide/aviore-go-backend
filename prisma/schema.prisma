@@ -247,7 +247,6 @@ model TransitHub {
 
   @@map("transit_hubs")
 }
-
 model Shipment {
   id           String @id @default(uuid())
   trackingCode String @unique
@@ -259,20 +258,26 @@ model Shipment {
   customerId String
   customer   User   @relation("CustomerShipments", fields: [customerId], references: [id])
 
-  // Pickup
-  pickupAddress String
-  pickupLat     Float
-  pickupLng     Float
-  pickupPlaceId String
+  // Sender Metadata
+  senderName  String?
+  senderPhone String?
 
-  // Destination
-  destinationAddress String
+  // Pickup Metadata
+  pickupAddress  String
+  pickupLandmark String?
+  pickupLat      Float
+  pickupLng      Float
+  pickupPlaceId  String?
+
+  // Destination Metadata
+  destinationAddress  String
+  destinationLandmark String?
   destinationLat     Float
   destinationLng     Float
-  destinationPlaceId String
+  destinationPlaceId String?
 
-  riderLastLat       String?
-  riderLastLng       String?
+  riderLastLat String?
+  riderLastLng String?
 
   // Delivery
   deliveryType    DeliveryType
@@ -335,6 +340,24 @@ model Shipment {
   @@index([customerId])
   @@index([riderId])
   @@map("shipments")
+}
+
+model Landmark {
+  id          String   @id @default(uuid())
+  state       String   @default("Osun")
+  city        String   @default("Osogbo")
+  name        String   // e.g., "Old Garage"
+  aliases     String[] // e.g., ["old garage", "station road", "garage"]
+  description String?  // e.g., "Opposite GTBank / Station Road Roundabout"
+  latitude    Float
+  longitude   Float
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([city])
+  @@index([isActive])
+  @@map("landmarks")
 }
 
 model RiderAssignment {

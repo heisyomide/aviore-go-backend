@@ -8,11 +8,13 @@ import { FlutterwaveService } from '../flutterwave/flutterwave.service';
 
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
+import { NotificationModule } from 'src/notification/notification.module';
 
 @Module({
   imports: [
     ConfigModule,
     HttpModule,
+    NotificationModule,
   ],
 
   controllers: [WalletController],

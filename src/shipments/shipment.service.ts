@@ -1,16 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { Prisma, ShipmentStatus } from '@prisma/client';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { PricingService } from '../pricing/pricing.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
+import { PaymentsService } from '../payments/payments.service';
+import { NavigationService } from './navigation.service'; // 👈 Injected NavigationService
 
 @Injectable()
 export class ShipmentsService {
   constructor(
     private prisma: PrismaService,
     private PricingService: PricingService,
-    private readonly dispatchService: DispatchService
+    private readonly dispatchService: DispatchService,
+    private readonly paymentsService: PaymentsService,
+    private readonly navigationService: NavigationService, // 👈 Injected NavigationService
   ) {}
 
   private async generateTrackingCode(): Promise<string> {
@@ -121,6 +125,77 @@ export class ShipmentsService {
     await this.dispatchService.dispatchShipment(shipment);
 
     return shipment;
+  }
+
+  /**
+   * Get Voice Navigation Turn Steps for Rider PWA Map
+   */
+  async getShipmentNavigationRoute(shipmentId: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException('Shipment not found.');
+    }
+
+    return this.navigationService.getVoiceRoute(
+      Number(shipment.pickupLat),
+      Number(shipment.pickupLng),
+      Number(shipment.destinationLat),
+      Number(shipment.destinationLng),
+    );
+  }
+
+  /**
+   * Verify Delivery PIN & Trigger Automatic Escrow Release
+   */
+  async verifyDeliveryPin(shipmentId: string, inputPin: string, riderUserId: string) {
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!shipment) {
+      throw new NotFoundException('Shipment not found.');
+    }
+
+    if (shipment.status === ShipmentStatus.DELIVERED) {
+      throw new BadRequestException('Shipment has already been marked as delivered.');
+    }
+
+    // 1. Validate PIN
+    if (shipment.verificationPin !== inputPin) {
+      throw new BadRequestException('Invalid delivery PIN provided.');
+    }
+
+    // 2. Mark shipment as DELIVERED
+    const updatedShipment = await this.prisma.shipment.update({
+      where: { id: shipmentId },
+      data: {
+        status: ShipmentStatus.DELIVERED,
+        deliveredAt: new Date(),
+        timelineEvents: {
+          create: {
+            status: ShipmentStatus.DELIVERED,
+            description: 'Delivery verified via customer PIN.',
+            changedBy: 'RIDER',
+          },
+        },
+      },
+    });
+
+    // 3. Trigger Escrow Funds Release to Rider Wallet
+    const escrowResult = await this.paymentsService.releaseEscrow(
+      shipmentId,
+      riderUserId,
+    );
+
+    return {
+      success: true,
+      message: 'Delivery PIN verified successfully. Escrow released.',
+      shipment: updatedShipment,
+      payout: escrowResult,
+    };
   }
 
   async getCustomerStats(customerId: string) {

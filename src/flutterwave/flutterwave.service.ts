@@ -6,6 +6,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { PrismaService } from '../providers/database/prisma.service';
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '../notification/dto/send-notification.dto';
 import { firstValueFrom } from 'rxjs';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { TransferDto } from './dto/transfer.dto';
@@ -16,6 +18,7 @@ export class FlutterwaveService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly http: HttpService,
+    private readonly notificationService: NotificationService, // 👈 Injected
   ) {}
 
   private get headers() {
@@ -25,6 +28,9 @@ export class FlutterwaveService {
     };
   }
 
+  /**
+   * Initialize Payment Link for Customer Shipment
+   */
   async initializePayment(dto: InitializePaymentDto) {
     const txRef = `AV-${Date.now()}`;
 
@@ -71,16 +77,18 @@ export class FlutterwaveService {
 
       return response.data;
     } catch (error: any) {
-  throw new InternalServerErrorException(
-    error.response?.data?.message ??
-    error.response?.data ??
-    error.message ??
-    'Flutterwave initialization failed',
-  );
-}
+      throw new InternalServerErrorException(
+        error.response?.data?.message ??
+          error.response?.data ??
+          error.message ??
+          'Flutterwave initialization failed',
+      );
     }
-  
+  }
 
+  /**
+   * Verify Payment Status
+   */
   async verifyPayment(transactionId: string) {
     try {
       const response = await firstValueFrom(
@@ -90,36 +98,63 @@ export class FlutterwaveService {
         ),
       );
 
-      const payment = response.data.data;
+      const paymentData = response.data.data;
+      const isSuccessful = paymentData.status === 'successful';
 
-      await this.prisma.payment.update({
+      const updatedPayment = await this.prisma.payment.update({
         where: {
-          txRef: payment.tx_ref,
+          txRef: paymentData.tx_ref,
         },
         data: {
-          status:
-            payment.status === 'successful'
-              ? 'SUCCESS'
-              : 'FAILED',
-          flutterwaveTxId: String(payment.id),
-          flutterwaveRef: payment.flw_ref,
+          status: isSuccessful ? 'SUCCESS' : 'FAILED',
+          flutterwaveTxId: String(paymentData.id),
+          flutterwaveRef: paymentData.flw_ref,
         },
       });
 
-      return payment;
+      // 🔔 Dispatch Notification if payment succeeded
+      if (isSuccessful && updatedPayment.customerId) {
+        this.notificationService
+          .dispatch({
+            type: NotificationType.PAYMENT_RECEIPT,
+            userId: updatedPayment.customerId,
+            title: 'Payment Successful',
+            body: `Your payment of ₦${paymentData.amount} was confirmed successfully.`,
+            data: {
+              paymentId: updatedPayment.id,
+              shipmentId: updatedPayment.shipmentId,
+            },
+          })
+          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+      }
+
+      return paymentData;
     } catch (error) {
-      throw new BadRequestException('Verification failed');
+      throw new BadRequestException('Payment verification failed');
     }
   }
 
+  /**
+   * Initiate Bank Transfer / Payout
+   */
   async withdraw(dto: TransferDto) {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { userId: dto.riderId },
+    });
+
+    if (!wallet) {
+      throw new BadRequestException('Wallet not found');
+    }
+
+    const flwReference = `WD-${Date.now()}`;
+
     const payload = {
       account_bank: dto.accountBank,
       account_number: dto.accountNumber,
       amount: dto.amount,
       currency: 'NGN',
-      narration: dto.narration,
-      reference: `WD-${Date.now()}`,
+      narration: dto.narration || 'Aviorè Go Payout',
+      reference: flwReference,
       callback_url: dto.callbackUrl,
       debit_currency: 'NGN',
     };
@@ -129,84 +164,182 @@ export class FlutterwaveService {
         this.http.post(
           'https://api.flutterwave.com/v3/transfers',
           payload,
-          {
-            headers: this.headers,
-          },
+          { headers: this.headers },
         ),
       );
-const wallet = await this.prisma.wallet.findUnique({
 
-  where: {
+      const withdrawal = await this.prisma.withdrawal.create({
+        data: {
+          walletId: wallet.id,
+          riderId: dto.riderId,
+          amount: dto.amount,
+          bankName: dto.bankName,
+          bankCode: dto.accountBank,
+          accountNumber: dto.accountNumber,
+          accountName: dto.accountName,
+          flutterwaveReference: flwReference,
+          flutterwaveId: String(response.data.data.id),
+          status: 'PENDING',
+        },
+      });
 
-    userId: dto.riderId,
-
-  },
-
-});
-if (!wallet) {
-
-  throw new BadRequestException('Wallet not found');
-
-}
-const withdrawal = await this.prisma.withdrawal.create({
-  
-  data: {
-    walletId: wallet.id,
-    riderId: dto.riderId,
-    amount: dto.amount,
-    bankName: dto.bankName,
-    bankCode: dto.accountBank,
-    accountNumber: dto.accountNumber,
-    accountName: dto.accountName,
-    flutterwaveReference: payload.reference,
-    status: 'PENDING',
-  },
-});
-
-      await this.prisma.withdrawal.update({
-  where: {
-    id: withdrawal.id,
-  },
-  data: {
-    flutterwaveId: String(response.data.data.id),
-  },
-});
+      // 🔔 Dispatch Notification
+      this.notificationService
+        .dispatch({
+          type: NotificationType.WITHDRAWAL_UPDATE,
+          userId: dto.riderId,
+          title: 'Payout Processing',
+          body: `Your withdrawal of ₦${dto.amount} to ${dto.bankName} (${dto.accountNumber}) has been initiated via Flutterwave.`,
+          data: { withdrawalId: withdrawal.id },
+        })
+        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       throw new InternalServerErrorException(
-        'Withdrawal failed',
+        error.response?.data?.message ?? 'Withdrawal request failed',
       );
     }
   }
 
+  /**
+   * Fetch Nigerian Bank List
+   */
   async getBanks() {
-    const response = await firstValueFrom(
-      this.http.get(
-        'https://api.flutterwave.com/v3/banks/NG',
-        {
+    try {
+      const response = await firstValueFrom(
+        this.http.get('https://api.flutterwave.com/v3/banks/NG', {
           headers: this.headers,
-        },
-      ),
-    );
-
-    return response.data;
+        }),
+      );
+      return response.data;
+    } catch (error: any) {
+      throw new BadRequestException('Unable to fetch banks');
+    }
   }
 
+  /**
+   * Resolve Bank Account Name
+   */
   async resolveAccount(bankCode: string, accountNumber: string) {
-    const response = await firstValueFrom(
-      this.http.post(
-        'https://api.flutterwave.com/v3/accounts/resolve',
-        {
-          account_number: accountNumber,
-          account_bank: bankCode,
-        },
-        {
-          headers: this.headers,
-        },
-      ),
-    );
+    try {
+      const response = await firstValueFrom(
+        this.http.post(
+          'https://api.flutterwave.com/v3/accounts/resolve',
+          {
+            account_number: accountNumber,
+            account_bank: bankCode,
+          },
+          { headers: this.headers },
+        ),
+      );
+      return response.data;
+    } catch (error: any) {
+      throw new BadRequestException(
+        error.response?.data?.message ?? 'Account resolution failed',
+      );
+    }
+  }
 
-    return response.data;
+  /**
+   * Handle Webhook Events from Flutterwave
+   */
+  async handleWebhook(signature: string, payload: any) {
+    const secretHash = this.config.get<string>('FLW_SECRET_HASH');
+
+    // 1. Verify webhook signature
+    if (!signature || signature !== secretHash) {
+      throw new BadRequestException('Invalid webhook signature');
+    }
+
+    const { event, data } = payload;
+
+    // 2. Handle Transfer (Withdrawal) Events
+    if (event === 'transfer.completed') {
+      const withdrawal = await this.prisma.withdrawal.findFirst({
+        where: { flutterwaveReference: data.reference },
+      });
+
+      if (!withdrawal) {
+        return { status: 'Ignored: Withdrawal not found' };
+      }
+
+      if (data.status === 'SUCCESS') {
+        await this.prisma.$transaction(async (tx) => {
+          // Update Withdrawal status
+          await tx.withdrawal.update({
+            where: { id: withdrawal.id },
+            data: { status: 'SUCCESS' },
+          });
+
+          // Decrement pending balance
+          await tx.wallet.update({
+            where: { id: withdrawal.walletId },
+            data: {
+              pendingBalance: { decrement: withdrawal.amount },
+            },
+          });
+        });
+
+        // 🔔 Notify Rider
+        this.notificationService
+          .dispatch({
+            type: NotificationType.WITHDRAWAL_UPDATE,
+            userId: withdrawal.riderId,
+            title: 'Withdrawal Completed',
+            body: `Your payout of ₦${withdrawal.amount} to ${withdrawal.bankName} has been completed successfully.`,
+            data: { withdrawalId: withdrawal.id },
+          })
+          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+      } else if (data.status === 'FAILED') {
+        await this.prisma.$transaction(async (tx) => {
+          // Update Withdrawal status
+          await tx.withdrawal.update({
+            where: { id: withdrawal.id },
+            data: { status: 'FAILED' },
+          });
+
+          // Reverse pending balance back to available balance
+          await tx.wallet.update({
+            where: { id: withdrawal.walletId },
+            data: {
+              pendingBalance: { decrement: withdrawal.amount },
+              availableBalance: { increment: withdrawal.amount },
+            },
+          });
+        });
+
+        // 🔔 Notify Rider
+        this.notificationService
+          .dispatch({
+            type: NotificationType.WITHDRAWAL_UPDATE,
+            userId: withdrawal.riderId,
+            title: 'Withdrawal Failed',
+            body: `Your withdrawal request of ₦${withdrawal.amount} failed and funds have been returned to your available balance.`,
+            data: { withdrawalId: withdrawal.id },
+          })
+          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+      }
+    }
+
+    // 3. Handle Charge/Payment Events (Optional redundant safety check)
+    if (event === 'charge.completed' && data.status === 'successful') {
+      const payment = await this.prisma.payment.findUnique({
+        where: { txRef: data.tx_ref },
+      });
+
+      if (payment && payment.status === 'PENDING') {
+        await this.prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            status: 'SUCCESS',
+            flutterwaveTxId: String(data.id),
+            flutterwaveRef: data.flw_ref,
+          },
+        });
+      }
+    }
+
+    return { status: 'success' };
   }
 }

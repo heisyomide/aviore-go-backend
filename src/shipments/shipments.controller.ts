@@ -65,6 +65,32 @@ export class ShipmentsController {
     return this.shipmentsService.getCustomerShipments(customerId);
   }
 
+  /**
+   * Fetch Navigation Voice Route for Rider Map PWA
+   */
+  @Get(':id/navigation-route')
+  async getNavigationRoute(@Param('id') shipmentId: string) {
+    return this.shipmentsService.getShipmentNavigationRoute(shipmentId);
+  }
+
+  /**
+   * Verify Customer Delivery PIN & Release Escrow Payment
+   */
+  @Post(':id/verify-pin')
+  @HttpCode(HttpStatus.OK)
+  async verifyDeliveryPin(
+    @Param('id') shipmentId: string,
+    @Body('pin') inputPin: string,
+    @GetUser() user: any,
+  ) {
+    const riderUserId = this.extractUserId(user);
+    return this.shipmentsService.verifyDeliveryPin(
+      shipmentId,
+      inputPin,
+      riderUserId,
+    );
+  }
+
   @Get(':idOrCode')
   async getShipment(@Param('idOrCode') idOrCode: string, @GetUser() user: any) {
     const customerId = this.extractUserId(user);

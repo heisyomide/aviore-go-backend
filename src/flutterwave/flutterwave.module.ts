@@ -8,10 +8,12 @@ import { FlutterwaveController } from './flutterwave.controller';
 import { FlutterwaveService } from './flutterwave.service';
 import { WalletService } from 'src/wallet/wallet.service';
 import { WalletController } from 'src/wallet/wallet.controller';
+import { NotificationModule } from 'src/notification/notification.module';
 
 @Module({
   imports: [
     ConfigModule,
+    NotificationModule,
     HttpModule.register({
       timeout: 30000,
       maxRedirects: 5,

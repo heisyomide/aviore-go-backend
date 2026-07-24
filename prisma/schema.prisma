@@ -272,8 +272,8 @@ model Shipment {
   // Destination Metadata
   destinationAddress  String
   destinationLandmark String?
-  destinationLat     Float
-  destinationLng     Float
+  destinationLat      Float
+  destinationLng      Float
   destinationPlaceId String?
 
   riderLastLat String?
@@ -321,6 +321,7 @@ model Shipment {
   promoCodeId        String?
   marketplaceOrderId String?   @unique
   escrowReleaseAt    DateTime?
+  deliveredAt        DateTime? // 👈 ADDED HERE
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -330,11 +331,11 @@ model Shipment {
   currentHub TransitHub?      @relation("HubLocation", fields: [currentHubId], references: [id])
   promoCode  PromoCode?       @relation(fields: [promoCodeId], references: [id])
 
-  payments       Payment[]
-  reviews        Review[]
-  assignments    RiderAssignment[]
+  payments        Payment[]
+  reviews         Review[]
+  assignments     RiderAssignment[]
   timelineEvents StatusTimeline[]
-  trackingLogs   TrackingLog[]
+  trackingLogs    TrackingLog[]
 
   @@index([status])
   @@index([customerId])
@@ -359,6 +360,8 @@ model Landmark {
   @@index([isActive])
   @@map("landmarks")
 }
+
+
 
 model RiderAssignment {
   id         String           @id @default(uuid())
@@ -491,8 +494,10 @@ model Notification {
   userId    String
   title     String
   body      String
+  type      String?     // e.g. "LOGIN_ALERT", "ESCROW_VERIFICATION_PIN", "ORDER_STATUS_UPDATE"
   channel   ChannelType @default(IN_APP)
   isRead    Boolean     @default(false)
+  data      Json?       // Metadata (e.g., { pin: "8492", orderId: "..." })
   createdAt DateTime    @default(now())
   user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 

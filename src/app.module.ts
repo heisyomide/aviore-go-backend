@@ -26,9 +26,10 @@ import { AdminModule } from './admin/admin.module';
 import { LandmarksModule } from './landmarks/landmarks.module';
 import { HealthController } from './health/health.controller';
 import { HealthModule } from './health/health.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
-  imports: [DatabaseModule, LandmarksModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
+  imports: [DatabaseModule, LandmarksModule, NotificationModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
     RiderDashboardModule, FlutterwaveModule , PricingModule,UsersModule, 
     PaymentsModule, TrackingModule, AuthModule, RiderProfileModule, WalletModule, ShipmentsModule,ScheduleModule.forRoot(), RiderModule,],
   controllers: [],

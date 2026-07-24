@@ -2,6 +2,9 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   Query,
@@ -17,26 +20,17 @@ export class FlutterwaveController {
   ) {}
 
   @Post('initialize')
-  initialize(
-    @Body() dto: InitializePaymentDto,
-  ) {
+  initialize(@Body() dto: InitializePaymentDto) {
     return this.flutterwaveService.initializePayment(dto);
   }
 
   @Get('verify/:transactionId')
-  verify(
-    @Param('transactionId')
-    transactionId: string,
-  ) {
-    return this.flutterwaveService.verifyPayment(
-      transactionId,
-    );
+  verify(@Param('transactionId') transactionId: string) {
+    return this.flutterwaveService.verifyPayment(transactionId);
   }
 
   @Post('withdraw')
-  withdraw(
-    @Body() dto: TransferDto,
-  ) {
+  withdraw(@Body() dto: TransferDto) {
     return this.flutterwaveService.withdraw(dto);
   }
 
@@ -48,12 +42,21 @@ export class FlutterwaveController {
   @Get('resolve-account')
   resolve(
     @Query('bankCode') bankCode: string,
-    @Query('accountNumber')
-    accountNumber: string,
+    @Query('accountNumber') accountNumber: string,
   ) {
-    return this.flutterwaveService.resolveAccount(
-      bankCode,
-      accountNumber,
-    );
+    return this.flutterwaveService.resolveAccount(bankCode, accountNumber);
+  }
+
+  /**
+   * Flutterwave Webhook Listener
+   * Configure URL in Flutterwave Dashboard: https://your-domain.com/flutterwave/webhook
+   */
+  @Post('webhook')
+  @HttpCode(HttpStatus.OK)
+  async handleWebhook(
+    @Headers('verif-hash') signature: string,
+    @Body() payload: any,
+  ) {
+    return this.flutterwaveService.handleWebhook(signature, payload);
   }
 }

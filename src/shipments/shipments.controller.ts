@@ -1,7 +1,18 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, UseGuards } from '@nestjs/common';
-import { ShipmentsService } from '../shipments/shipment.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; 
-import { GetUser } from '.././auth/decorators/get-user.decorator';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ShipmentsService } from './shipment.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { GetUser } from '../auth/decorators/get-user.decorator';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 
 @Controller('shipments')
@@ -9,62 +20,54 @@ import { CreateShipmentDto } from './dto/create-shipment.dto';
 export class ShipmentsController {
   constructor(private readonly shipmentsService: ShipmentsService) {}
 
+  private extractUserId(user: any): string {
+    const userId = user?.userId || user?.id || user?.sub;
+    if (!userId) {
+      throw new UnauthorizedException('User identifier missing from auth session');
+    }
+    return userId;
+  }
+
   @Get('dashboard-stats')
   async getDashboardStats(@GetUser() user: any) {
-    // Standardizes ID reading from JWT .sub claim
-    return this.shipmentsService.getCustomerStats(user.userId);
+    const customerId = this.extractUserId(user);
+    return this.shipmentsService.getCustomerStats(customerId);
   }
 
-@Post()
-@HttpCode(HttpStatus.CREATED)
-async create(
-  @Body() dto: CreateShipmentDto,
-  @GetUser() user: any,
-) {
-  const customerId = user.userId;
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  async create(@Body() dto: CreateShipmentDto, @GetUser() user: any) {
+    const customerId = this.extractUserId(user);
+    const shipment = await this.shipmentsService.createShipment(customerId, dto);
 
-  const shipment =
-    await this.shipmentsService.createShipment(
-      customerId,
-      dto,
-    );
+    return {
+      success: true,
+      message: 'Shipment created successfully',
+      data: shipment,
+    };
+  }
 
-  return {
-    success: true,
-    message: "Shipment created successfully",
-    data: shipment,
-  };
-}
   @Get('recent')
   async getRecentShipments(@GetUser() user: any) {
-    return this.shipmentsService.getRecentCustomerShipments(user.userId);
+    const customerId = this.extractUserId(user);
+    return this.shipmentsService.getRecentCustomerShipments(customerId);
   }
 
-  @Get("customer/dashboard")
-async getCustomerDashboard(@GetUser() user: any) {
-  return this.shipmentsService.getCustomerDashboard(user.userId);
-}
+  @Get('customer/dashboard')
+  async getCustomerDashboard(@GetUser() user: any) {
+    const customerId = this.extractUserId(user);
+    return this.shipmentsService.getCustomerDashboard(customerId);
+  }
 
   @Get()
+  getCustomerShipments(@Req() req) {
+    const customerId = this.extractUserId(req.user);
+    return this.shipmentsService.getCustomerShipments(customerId);
+  }
 
-getCustomerShipments(@Req() req) {
-
-  return this.shipmentsService.getCustomerShipments(req.user.userId);
-
-}
-
-
-@Get(":idOrCode")
-async getShipment(
-  @Param("idOrCode") idOrCode: string, // 1. Match the parameter variable name here
-  @GetUser() user: any,
-) {
-  // 2. Ensure your user context payload reads the correct property layout (userId or id)
-  const customerId = user.userId || user.id; 
-
-  return this.shipmentsService.getShipment(
-    idOrCode,
-    customerId,
-  );
-}
+  @Get(':idOrCode')
+  async getShipment(@Param('idOrCode') idOrCode: string, @GetUser() user: any) {
+    const customerId = this.extractUserId(user);
+    return this.shipmentsService.getShipment(idOrCode, customerId);
+  }
 }

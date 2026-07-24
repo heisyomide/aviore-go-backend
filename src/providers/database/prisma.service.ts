@@ -1,27 +1,37 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '.prisma/client';
-// ⚠️ Import dotenv here to catch early framework instantiation cycles
 import * as dotenv from 'dotenv';
+
 dotenv.config();
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private static pool: Pool;
+  private readonly logger = new Logger(PrismaService.name);
 
   constructor() {
-    // 1. Create a native PostgreSQL connection pool safely backed by environmental parsing
+    // 1. Create a native PostgreSQL connection pool with keep-alive & idle controls
     const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
+      max: 10, // Maximum active client connections in pool
+      idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
+      connectionTimeoutMillis: 10000, // 10-second connection timeout
+      keepAlive: true, // Keep socket alive across cloud load balancers / Neon proxy
     });
 
-    // 2. Wrap it inside the Prisma Driver Adapter layer
+    // 2. IMPORTANT: Catch background pool errors to prevent Node.js process crash on drop
+    pool.on('error', (err) => {
+      console.warn('⚠️ Idle PostgreSQL client error in pool (handled gracefully):', err.message);
+    });
+
+    // 3. Wrap inside the Prisma Driver Adapter layer
     const adapter = new PrismaPg(pool);
 
-    // 3. Pass the adapter instance directly into the engine constructor
+    // 4. Pass the adapter instance directly into the engine constructor
     super({ adapter });
-    
+
     PrismaService.pool = pool;
   }
 
@@ -31,6 +41,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleDestroy() {
     await this.$disconnect();
-    await PrismaService.pool.end();
+    if (PrismaService.pool) {
+      await PrismaService.pool.end();
+    }
   }
 }

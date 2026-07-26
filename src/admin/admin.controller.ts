@@ -1,12 +1,11 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { DashboardCacheService } from './dashboard-cache.service';
-import { RiderApplicationStatus, IdentityStatus, ShipmentStatus } from '@prisma/client';
+import { RiderApplicationStatus, IdentityStatus, ShipmentStatus, User } from '@prisma/client';
 import { AdminOperationsGateway } from './operations.gateway';
 import { TrackingService } from 'src/tracking/tracking.service';
 import { AdminFinanceService } from './finance.service';
 import { AdminReportsService } from './reports.service';
- // <-- 1. Import your customer service
 
 @Controller('admin')
 export class AdminController {
@@ -16,7 +15,7 @@ export class AdminController {
     private cacheService: DashboardCacheService,
     private readonly trackingService: TrackingService,
     private readonly financeService: AdminFinanceService, 
-    private readonly reportsService: AdminReportsService,// <-- 2. Inject it here
+    private readonly reportsService: AdminReportsService,
   ) {}
 
   /**
@@ -31,7 +30,6 @@ export class AdminController {
   async getAnalyticalIntelligenceSnapshot() {
     return await this.reportsService.compileAnalyticalReportsSummary();
   }
-
 
   /**
    * 2. SHIPMENTS PIPELINE: Paginated query infrastructure
@@ -100,47 +98,67 @@ export class AdminController {
         throw new BadRequestException('Target application record is unavailable for review.');
       }
 
+      // 1. REJECTION FLOW
       if (!approve) {
         return tx.riderApplication.update({
           where: { id: appId },
           data: {
             status: RiderApplicationStatus.REJECTED,
-            reviewedBy: adminId,
+            reviewedBy: adminId || null,
             reviewedAt: new Date(),
             rejectionReason: reason || 'Submitted tracking credentials could not be verified.'
           }
         });
       }
 
-      const targetUser = await tx.user.findUnique({ where: { email: app.email! } });
-      if (!targetUser) throw new BadRequestException('Relational user account details not found.');
+      // 2. LOCATE USER (First try app.userId, then fallback to email)
+      let targetUser: User | null = null;
 
+      if (app.userId) {
+        targetUser = await tx.user.findUnique({ where: { id: app.userId } });
+      }
+
+      if (!targetUser && app.email) {
+        targetUser = await tx.user.findUnique({ where: { email: app.email } });
+      }
+
+      if (!targetUser) {
+        throw new BadRequestException('Relational user account details not found.');
+      }
+
+      // 3. UPDATE USER STATUS
       await tx.user.update({
         where: { id: targetUser.id },
         data: { status: IdentityStatus.VERIFIED }
       });
 
+      // 4. UPDATE APPLICATION STATUS
       const updatedApp = await tx.riderApplication.update({
         where: { id: appId },
-        data: { status: RiderApplicationStatus.APPROVED, reviewedBy: adminId, reviewedAt: new Date() }
+        data: {
+          status: RiderApplicationStatus.APPROVED,
+          reviewedBy: adminId || null,
+          reviewedAt: new Date()
+        }
       });
 
+      // 5. UPSERT RIDER PROFILE
       await tx.riderProfile.upsert({
         where: { userId: targetUser.id },
         update: {
-          nin: app.idNumber,
-          accountNumber: app.accountNumber,
-          bankName: app.bankName,
-          bankCode: app.bankCode,
-          accountName: app.accountName
+          nin: app.idNumber || undefined,
+          accountNumber: app.accountNumber || undefined,
+          bankName: app.bankName || undefined,
+          bankCode: app.bankCode || undefined,
+          accountName: app.accountName || undefined,
         },
         create: {
           userId: targetUser.id,
-          nin: app.idNumber,
-          accountNumber: app.accountNumber,
-          bankName: app.bankName,
-          bankCode: app.bankCode,
-          accountName: app.accountName
+          nin: app.idNumber || '',
+          accountNumber: app.accountNumber || '',
+          bankName: app.bankName || '',
+          bankCode: app.bankCode || '',
+          accountName: app.accountName || '',
         }
       });
 
@@ -177,7 +195,7 @@ export class AdminController {
   /**
    * 6. CUSTOMERS MANIFEST: Matches frontend plural URL parameters perfectly
    */
-  @Get('customers') // <-- Changed path to plural 'customers'
+  @Get('customers')
   async getCustomersList() {
     return await this.cacheService.getAllCustomers();
   }
@@ -217,6 +235,7 @@ export class AdminController {
     
     return customerProfile;
   }
+
   @Get('riders')
   async getAllFleetRiders() {
     return await this.cacheService.getAllRiders();
@@ -230,6 +249,7 @@ export class AdminController {
   async getSingleFleetRider(@Param('id') id: string) {
     return await this.cacheService.getRiderById(id);
   }
+
   /**
    * 7. WILDCARD CATCH-ALLS (MUST REMAIN AT THE BOTTOM OF THE FILE)
    * Prevents standard strings like 'customers' or 'riders' from getting swallowed.
@@ -251,6 +271,4 @@ export class AdminController {
       throw new InternalServerErrorException('Fatal failure during backend manifest ingestion workflow.');
     }
   }
-
-
 }

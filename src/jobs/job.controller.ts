@@ -24,10 +24,12 @@ export class RiderJobsController {
   /**
    * GET /rider/jobs/available
    */
-  @Get('available')
-  getAvailableJobs() {
-    return this.riderJobsService.getAvailableJobs();
-  }
+@Get('available')
+@UseGuards(JwtAuthGuard) // or your Auth Guard
+async getAvailableJobs(@Req() req: any) {
+  const userId = req.user.id || req.user.sub;
+  return this.riderJobsService.getAvailableJobs(userId);
+}
 
   /**
    * GET /rider/jobs/:shipmentId

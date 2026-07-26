@@ -22,7 +22,7 @@ model User {
   passwordHash String
   firstName    String
   lastName     String
-
+  emailVerificationToken String?   @unique
   role             UserRole          @default(CUSTOMER)
   status           IdentityStatus    @default(PENDING_VERIFICATION)
   avatarUrl        String?

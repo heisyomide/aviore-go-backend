@@ -12,16 +12,25 @@ export class ResendService {
 
   async sendPriorityEmail(to: string, subject: string, html: string) {
     try {
+      // Uses RESEND_FROM_EMAIL if set, otherwise falls back to Resend's default test sender
       const fromEmail =
         this.config.get<string>('RESEND_FROM_EMAIL') ||
-        'Aviorè Security <security@aviore.com>';
+        'Aviorè Security <onboarding@resend.dev>';
 
-      return await this.resend.emails.send({
+      const res = await this.resend.emails.send({
         from: fromEmail,
         to: [to],
         subject,
         html,
       });
+
+      if (res.error) {
+        throw new InternalServerErrorException(
+          `Resend API Error: ${res.error.message}`,
+        );
+      }
+
+      return res;
     } catch (error: any) {
       throw new InternalServerErrorException(
         `Resend dispatch failed: ${error?.message || 'Unknown error'}`,

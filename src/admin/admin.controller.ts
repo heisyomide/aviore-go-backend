@@ -1,11 +1,13 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { DashboardCacheService } from './dashboard-cache.service';
-import { RiderApplicationStatus, IdentityStatus, ShipmentStatus, User } from '@prisma/client';
+import { RiderApplicationStatus,Prisma, IdentityStatus, ShipmentStatus, User } from '@prisma/client';
 import { AdminOperationsGateway } from './operations.gateway';
 import { TrackingService } from 'src/tracking/tracking.service';
 import { AdminFinanceService } from './finance.service';
 import { AdminReportsService } from './reports.service';
+import { NotificationService } from '../notification/notification.service'; // 👈 Import NotificationService
+import { NotificationType } from '../notification/dto/send-notification.dto';
 
 @Controller('admin')
 export class AdminController {
@@ -16,6 +18,7 @@ export class AdminController {
     private readonly trackingService: TrackingService,
     private readonly financeService: AdminFinanceService, 
     private readonly reportsService: AdminReportsService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -85,87 +88,155 @@ export class AdminController {
     });
   }
 
-  @Patch('riders/kyc/:applicationId/evaluate')
-  async evaluateRiderKYC(
-    @Param('applicationId') appId: string,
-    @Body('approve') approve: boolean,
-    @Body('adminId') adminId: string,
-    @Body('reason') reason?: string
-  ) {
-    return this.prisma.$transaction(async (tx) => {
-      const app = await tx.riderApplication.findUnique({ where: { id: appId } });
-      if (!app || app.status !== RiderApplicationStatus.SUBMITTED) {
-        throw new BadRequestException('Target application record is unavailable for review.');
+
+@Patch('riders/kyc/:applicationId/evaluate')
+async evaluateRiderKYC(
+  @Param('applicationId') appId: string,
+  @Body('approve') approve: boolean,
+  @Body('adminId') adminId: string,
+  @Body('reason') reason?: string,
+) {
+  const result = await this.prisma.$transaction(async (tx) => {
+    const app = await tx.riderApplication.findUnique({ where: { id: appId } });
+    if (!app || app.status !== RiderApplicationStatus.SUBMITTED) {
+      throw new BadRequestException('Target application record is unavailable for review.');
+    }
+
+    // 1. REJECTION FLOW
+    if (!approve) {
+      const rejectedApp = await tx.riderApplication.update({
+        where: { id: appId },
+        data: {
+          status: RiderApplicationStatus.REJECTED,
+          reviewedBy: adminId || null,
+          reviewedAt: new Date(),
+          rejectionReason: reason || 'Submitted credentials could not be verified.',
+        },
+      });
+
+      // Send Rejection Notification Email
+      if (app.email) {
+        this.notificationService
+          .dispatch({
+            type: NotificationType.LOGIN_ALERT,
+            userId: app.userId || '',
+            email: app.email,
+            title: 'Rider Application Update',
+            body: `Hello ${app.firstName || 'Rider'}, your application could not be approved. Reason: ${
+              reason || 'Submitted credentials could not be verified.'
+            }`,
+          })
+          .catch((err) => console.error('[KYC REJECTION EMAIL FAILED]', err));
       }
 
-      // 1. REJECTION FLOW
-      if (!approve) {
-        return tx.riderApplication.update({
-          where: { id: appId },
-          data: {
-            status: RiderApplicationStatus.REJECTED,
-            reviewedBy: adminId || null,
-            reviewedAt: new Date(),
-            rejectionReason: reason || 'Submitted tracking credentials could not be verified.'
-          }
+      return { app: rejectedApp, user: null, approved: false };
+    }
+
+    // 2. LOCATE USER
+    let targetUser: User | null = null;
+
+    if (app.userId) {
+      targetUser = await tx.user.findUnique({ where: { id: app.userId } });
+    }
+
+    if (!targetUser) {
+      const searchConditions: Prisma.UserWhereInput[] = [];
+
+      if (app.email) {
+        searchConditions.push({
+          email: { equals: app.email.trim(), mode: 'insensitive' },
         });
       }
 
-      // 2. LOCATE USER (First try app.userId, then fallback to email)
-      let targetUser: User | null = null;
-
-      if (app.userId) {
-        targetUser = await tx.user.findUnique({ where: { id: app.userId } });
+      if ((app as any).phoneNumber || (app as any).phone) {
+        searchConditions.push({
+          phoneNumber: (app as any).phoneNumber || (app as any).phone,
+        });
       }
 
-      if (!targetUser && app.email) {
-        targetUser = await tx.user.findUnique({ where: { email: app.email } });
+      if (searchConditions.length > 0) {
+        targetUser = await tx.user.findFirst({
+          where: { OR: searchConditions },
+        });
       }
+    }
 
-      if (!targetUser) {
-        throw new BadRequestException('Relational user account details not found.');
-      }
+    // 3. AUTO-CREATE USER IF STILL NOT FOUND
+    if (!targetUser) {
+      const userEmail = app.email ? app.email.trim().toLowerCase() : `rider_${app.id}@aviore.com`;
+      const userPhone =
+        (app as any).phoneNumber || (app as any).phone || `0000000000_${app.id.substring(0, 5)}`;
 
-      // 3. UPDATE USER STATUS
-      await tx.user.update({
-        where: { id: targetUser.id },
-        data: { status: IdentityStatus.VERIFIED }
-      });
-
-      // 4. UPDATE APPLICATION STATUS
-      const updatedApp = await tx.riderApplication.update({
-        where: { id: appId },
+      targetUser = await tx.user.create({
         data: {
-          status: RiderApplicationStatus.APPROVED,
-          reviewedBy: adminId || null,
-          reviewedAt: new Date()
-        }
-      });
-
-      // 5. UPSERT RIDER PROFILE
-      await tx.riderProfile.upsert({
-        where: { userId: targetUser.id },
-        update: {
-          nin: app.idNumber || undefined,
-          accountNumber: app.accountNumber || undefined,
-          bankName: app.bankName || undefined,
-          bankCode: app.bankCode || undefined,
-          accountName: app.accountName || undefined,
+          firstName: app.firstName || 'Rider',
+          lastName: app.lastName || 'Operator',
+          email: userEmail,
+          phoneNumber: userPhone,
+          passwordHash: 'KYC_APPROVED_EXTERNAL_AUTH',
+          role: 'RIDER' as any,
+          status: IdentityStatus.VERIFIED,
         },
-        create: {
-          userId: targetUser.id,
-          nin: app.idNumber || '',
-          accountNumber: app.accountNumber || '',
-          bankName: app.bankName || '',
-          bankCode: app.bankCode || '',
-          accountName: app.accountName || '',
-        }
       });
+    } else {
+      // Update existing user status
+      targetUser = await tx.user.update({
+        where: { id: targetUser.id },
+        data: { status: IdentityStatus.VERIFIED },
+      });
+    }
 
-      return updatedApp;
+    // 4. UPDATE APPLICATION STATUS
+    const updatedApp = await tx.riderApplication.update({
+      where: { id: appId },
+      data: {
+        status: RiderApplicationStatus.APPROVED,
+        reviewedBy: adminId || null,
+        reviewedAt: new Date(),
+        userId: targetUser.id,
+      },
     });
+
+    // 5. UPSERT RIDER PROFILE
+    await tx.riderProfile.upsert({
+      where: { userId: targetUser.id },
+      update: {
+        nin: app.idNumber || undefined,
+        accountNumber: app.accountNumber || undefined,
+        bankName: app.bankName || undefined,
+        bankCode: app.bankCode || undefined,
+        accountName: app.accountName || undefined,
+      },
+      create: {
+        userId: targetUser.id,
+        nin: app.idNumber || '',
+        accountNumber: app.accountNumber || '',
+        bankName: app.bankName || '',
+        bankCode: app.bankCode || '',
+        accountName: app.accountName || '',
+      },
+    });
+
+    return { app: updatedApp, user: targetUser, approved: true };
+  });
+
+  // 6. DISPATCH ACCOUNT VALIDATION EMAIL (Post-transaction)
+  if (result.approved && result.user) {
+    this.notificationService
+      .dispatch({
+        type: NotificationType.LOGIN_ALERT,
+        userId: result.user.id,
+        email: result.user.email,
+        title: 'Account Validated!',
+        body: `Hello ${
+          result.user.firstName || 'Rider'
+        }, your account is now confirmed and validated! You are all set to start taking orders on Aviorè Go.`,
+      })
+      .catch((err) => console.error('[ACCOUNT VALIDATED EMAIL FAILED]', err));
   }
 
+  return result.app;
+}
   /**
    * 4. PRICING ENGINE CONFIG: Synchronous lookups and modifications
    */

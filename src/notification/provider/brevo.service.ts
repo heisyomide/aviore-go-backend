@@ -18,14 +18,16 @@ export class BrevoService {
     htmlContent: string,
   ): Promise<any> {
     try {
+      const fromEmail =
+        this.config.get<string>('BREVO_FROM_EMAIL') ||
+        'heisyomide12@gmail.com'; // 👈 Replace with your Brevo account email
+
       return await this.brevoClient.transactionalEmails.sendTransacEmail({
         subject,
         htmlContent,
         sender: {
           name: 'Aviorè Dispatch',
-          email:
-            this.config.get<string>('BREVO_FROM_EMAIL') ||
-            'dispatch@aviore.com',
+          email: fromEmail,
         },
         to: to.map((email) => ({ email })),
       });

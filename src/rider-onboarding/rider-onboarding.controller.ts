@@ -4,9 +4,12 @@ import {
   Get,
   Post,
   Param,
+  UseGuards,
+  Req,
 } from '@nestjs/common';
 
 import { RiderOnboardingService } from './rider-onboarding.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // 👈 Update path if your JwtAuthGuard is located elsewhere
 
 import { CreateStep1Dto } from './dto/create-step-one.dto';
 import { CreateStep2Dto } from './dto/step-two.dto';
@@ -23,13 +26,15 @@ export class RiderOnboardingController {
   ) {}
 
   /**
-   * 🟢 STEP ZERO: Starts an anonymous rider onboarding process.
-   * Flutter handles hitting this once and saving the returned ID locally.
+   * 🟢 STEP ZERO: Starts a rider onboarding process attached to the authenticated user.
    */
-  @Post('start')
-  startApplication() {
-    return this.onboardingService.createApplication();
-  }
+@UseGuards(JwtAuthGuard)
+@Post('start')
+startApplication(@Req() req) {
+  // 🟢 Handles req.user.id, req.user.userId, and req.user.sub
+  const userId = req.user?.id || req.user?.userId || req.user?.sub;
+  return this.onboardingService.createApplication(userId);
+}
 
   /**
    * Retrieves the raw state records for a given application ID.
@@ -110,8 +115,11 @@ export class RiderOnboardingController {
   /**
    * Final validation compilation check and review state submission seal.
    */
+  @UseGuards(JwtAuthGuard)
   @Post('submit/:applicationId')
-  submit(@Param('applicationId') applicationId: string) {
-    return this.onboardingService.submitApplication(applicationId);
+  submit(@Param('applicationId') applicationId: string, @Req() req) {
+    // 👈 Extract user ID from JWT payload
+    const userId = req.user.id || req.user.sub;
+    return this.onboardingService.submitApplication(applicationId, userId);
   }
 }

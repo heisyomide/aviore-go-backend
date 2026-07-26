@@ -2,7 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  NotFoundException,
+  NotFoundException,ForbiddenException,
 } from '@nestjs/common';
 
 import { ShipmentStatus } from '@prisma/client';
@@ -13,6 +13,7 @@ import { DispatchService } from 'src/dispatch/dispatch.service';
 import { NotificationService } from 'src/notification/notification.service';
 import { NotificationType } from 'src/notification/dto/send-notification.dto';
 
+// ... inside your service class:
 @Injectable()
 export class RiderJobsService {
   constructor(
@@ -25,33 +26,52 @@ export class RiderJobsService {
   /**
    * Get all available jobs
    */
-  async getAvailableJobs() {
-    const shipments = await this.prisma.shipment.findMany({
-      where: {
-        status: ShipmentStatus.PENDING,
-        riderId: null,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      take: 20,
-    });
 
-    return shipments.map((shipment) => ({
-      id: shipment.id,
-      trackingCode: shipment.trackingCode,
-      packageCategory: shipment.packageCategory,
-      deliveryType: shipment.deliveryType,
-      weightRange: shipment.weightRange,
-      pickupAddress: shipment.pickupAddress,
-      destinationAddress: shipment.destinationAddress,
-      distanceKm: shipment.distanceKm,
-      estimatedMinutes: shipment.estimatedMinutes,
-      payout: Number(shipment.riderShare),
-      isExpress: shipment.isExpress,
-      createdAt: shipment.createdAt,
-    }));
+
+async getAvailableJobs(userId: string) {
+  // 1. Fetch the rider's profile to check availability state
+  const riderProfile = await this.prisma.riderProfile.findUnique({
+    where: { userId },
+  });
+
+  if (!riderProfile) {
+    throw new NotFoundException('Rider profile not found.');
   }
+
+  // 🛡️ 2. Offline Guard: Block offline riders from viewing available jobs
+  if (!riderProfile.isOnline) {
+    throw new ForbiddenException(
+      'You are currently offline. Please toggle your status to online to view available jobs.',
+    );
+  }
+
+  // 3. Fetch pending shipments if the rider is online
+  const shipments = await this.prisma.shipment.findMany({
+    where: {
+      status: ShipmentStatus.PENDING,
+      riderId: null,
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+    take: 20,
+  });
+
+  return shipments.map((shipment) => ({
+    id: shipment.id,
+    trackingCode: shipment.trackingCode,
+    packageCategory: shipment.packageCategory,
+    deliveryType: shipment.deliveryType,
+    weightRange: shipment.weightRange,
+    pickupAddress: shipment.pickupAddress,
+    destinationAddress: shipment.destinationAddress,
+    distanceKm: shipment.distanceKm,
+    estimatedMinutes: shipment.estimatedMinutes,
+    payout: Number(shipment.riderShare),
+    isExpress: shipment.isExpress,
+    createdAt: shipment.createdAt,
+  }));
+}
 
   /**
    * Get a single job

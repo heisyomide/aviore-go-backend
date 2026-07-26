@@ -88,4 +88,19 @@ export class UsersService {
       return user;
     });
   }
+  // Inside users.service.ts
+async findById(id: string) {
+  return this.prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      role: true,
+      status: true,
+      phoneNumber: true,
+    },
+  });
+}
 }

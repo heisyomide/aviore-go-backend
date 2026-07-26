@@ -3,8 +3,10 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  ForbiddenException,
+  UnauthorizedException,
 } from '@nestjs/common';
-import { Prisma, RiderApplicationStatus, VehicleType } from '@prisma/client';
+import { Prisma, RiderApplicationStatus, IdentityStatus } from '@prisma/client';
 import { PrismaService } from '../providers/database/prisma.service';
 
 // DTO Imports
@@ -21,12 +23,25 @@ export class RiderOnboardingService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Generates a brand new anonymous rider onboarding application shell.
-   * Returns metadata wrapper with explicit ID hook for Flutter persistence.
+   * Generates a brand new rider onboarding application shell attached to authenticated user.
    */
-  async createApplication() {
+  async createApplication(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      throw new UnauthorizedException('User account not found.');
+    }
+
+    if (user.status === IdentityStatus.PENDING_VERIFICATION) {
+      throw new ForbiddenException(
+        'Please verify your email address before initiating rider onboarding.',
+      );
+    }
+
     const app = await this.prisma.riderApplication.create({
       data: {
+        userId: user.id,
+        email: user.email,
         currentStep: 1,
         status: RiderApplicationStatus.DRAFT,
       },
@@ -40,9 +55,6 @@ export class RiderOnboardingService {
     };
   }
 
-  /**
-   * Returns rider application by explicit ID string.
-   */
   async getApplication(applicationId: string) {
     const application = await this.prisma.riderApplication.findUnique({
       where: { id: applicationId },
@@ -55,9 +67,6 @@ export class RiderOnboardingService {
     return application;
   }
 
-  /**
-   * Returns onboarding progress metadata diagnostics using applicationId keys.
-   */
   async getProgress(applicationId: string) {
     const application = await this.getApplication(applicationId);
 
@@ -69,9 +78,6 @@ export class RiderOnboardingService {
     };
   }
 
-  /**
-   * Generic database context updater abstracted away from authentication states.
-   */
   private async updateApplication(
     applicationId: string,
     step: number,
@@ -97,7 +103,8 @@ export class RiderOnboardingService {
      ========================================== */
 
   async saveStepOne(applicationId: string, dto: CreateStep1Dto) {
-    return this.updateApplication(applicationId, 2, {
+    // 1. Update Application table
+    const application = await this.updateApplication(applicationId, 2, {
       firstName: dto.firstName,
       lastName: dto.lastName,
       email: dto.email,
@@ -105,6 +112,22 @@ export class RiderOnboardingService {
       middleName: dto.middleName,
       referralCode: dto.referralCode,
     });
+
+    // 🟢 2. SYNC TO USER TABLE: Persist names and actual phone number to User table
+    if (application.userId) {
+      await this.prisma.user.update({
+        where: { id: application.userId },
+        data: {
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          ...(dto.phoneNumber && !dto.phoneNumber.startsWith('PENDING_')
+            ? { phoneNumber: dto.phoneNumber }
+            : {}),
+        },
+      });
+    }
+
+    return application;
   }
 
   async saveStepTwo(applicationId: string, dto: CreateStep2Dto) {
@@ -144,13 +167,23 @@ export class RiderOnboardingService {
   }
 
   async saveStepFive(applicationId: string, dto: CreateStep5Dto) {
-    return this.updateApplication(applicationId, 6, {
+    const updatedApp = await this.updateApplication(applicationId, 6, {
       profilePhotoUrl: dto.profilePhotoUrl,
       driversLicenseUrl: dto.driversLicenseUrl,
       vehiclePaperUrl: dto.vehiclePaperUrl,
       insuranceUrl: dto.insuranceUrl,
       roadWorthinessUrl: dto.roadWorthinessUrl,
     });
+
+    // 🟢 Sync profile picture to User table if provided
+    if (dto.profilePhotoUrl && updatedApp.userId) {
+      await this.prisma.user.update({
+        where: { id: updatedApp.userId },
+        data: { avatarUrl: dto.profilePhotoUrl },
+      });
+    }
+
+    return updatedApp;
   }
 
   async saveStepSix(applicationId: string, dto: CreateStep6Dto) {
@@ -171,12 +204,24 @@ export class RiderOnboardingService {
   }
 
   /**
-   * Submits application, evaluates data completeness and filters against duplicates.
+   * Submits application, evaluates data completeness and filters against external duplicates.
    */
-  async submitApplication(applicationId: string) {
+  async submitApplication(applicationId: string, userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      throw new UnauthorizedException('User account not found.');
+    }
+
+    if (user.status === IdentityStatus.PENDING_VERIFICATION) {
+      throw new ForbiddenException(
+        'Email address must be confirmed before submitting rider onboarding documentation.',
+      );
+    }
+
     const application = await this.getApplication(applicationId);
 
-    // 1. Validation - Terms and Agreements
+    // 1. Validation - Agreements
     if (
       !application.acceptedTerms ||
       !application.acceptedCommission ||
@@ -187,7 +232,7 @@ export class RiderOnboardingService {
       );
     }
 
-    // 2. Validation - Required Identity Credentials
+    // 2. Validation - Identity
     if (
       !application.idFrontUrl ||
       !application.idBackUrl ||
@@ -199,7 +244,7 @@ export class RiderOnboardingService {
       throw new BadRequestException('Identity verification fields are incomplete.');
     }
 
-    // 3. Validation - Required Vehicle Particulars
+    // 3. Validation - Vehicle
     if (
       !application.vehicleType ||
       !application.plateNumber ||
@@ -209,7 +254,7 @@ export class RiderOnboardingService {
       throw new BadRequestException('Vehicle information is incomplete.');
     }
 
-    // 4. Validation - Required Banking Payout Channels
+    // 4. Validation - Banking
     if (
       !application.bankName ||
       !application.accountNumber ||
@@ -218,7 +263,7 @@ export class RiderOnboardingService {
       throw new BadRequestException('Bank information is incomplete.');
     }
 
-    // 5. Duplicate Submission Block checks
+    // 5. Check if already submitted
     if (
       application.status === RiderApplicationStatus.SUBMITTED ||
       application.status === RiderApplicationStatus.UNDER_REVIEW
@@ -226,31 +271,31 @@ export class RiderOnboardingService {
       throw new ConflictException('Application has already been submitted.');
     }
 
-    /* ==========================================================
-       6. SYSTEM UNIQUENESS AUDITS (Cross-checking system accounts)
-       ========================================================== */
-
-    // Check if the provided contact email conflicts with an active user account
+    // 6. System Uniqueness Checks
     if (application.email) {
-      const emailConflict = await this.prisma.user.findUnique({
-        where: { email: application.email },
+      const emailConflict = await this.prisma.user.findFirst({
+        where: {
+          email: application.email,
+          id: { not: userId },
+        },
       });
       if (emailConflict) {
-        throw new ConflictException('An account with this email address already exists.');
+        throw new ConflictException('An account with this email address already belongs to another user.');
       }
     }
 
-    // Check if the contact phone number conflicts with an active user account
     if (application.phoneNumber) {
-      const phoneConflict = await this.prisma.user.findUnique({
-        where: { phoneNumber: application.phoneNumber },
+      const phoneConflict = await this.prisma.user.findFirst({
+        where: {
+          phoneNumber: application.phoneNumber,
+          id: { not: userId },
+        },
       });
       if (phoneConflict) {
-        throw new ConflictException('An account with this phone number already exists.');
+        throw new ConflictException('An account with this phone number already belongs to another user.');
       }
     }
 
-    // Check if vehicle plate is running in another submitted/approved processing scope
     if (application.plateNumber) {
       const plateConflict = await this.prisma.riderApplication.findFirst({
         where: {
@@ -261,15 +306,28 @@ export class RiderOnboardingService {
               RiderApplicationStatus.UNDER_REVIEW,
             ],
           },
-          id: { not: applicationId }, // Exclude current lookup shell
+          id: { not: applicationId },
         },
       });
       if (plateConflict) {
-        throw new ConflictException('This vehicle plate number is already attached to an open processing application.');
+        throw new ConflictException(
+          'This vehicle plate number is already attached to an open processing application.',
+        );
       }
     }
 
-    // 7. Complete Submission Lifecycle and seal operational states
+    // 🟢 7. FINAL SYNC TO USER & RIDER PROFILE TABLES
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        firstName: application.firstName || user.firstName,
+        lastName: application.lastName || user.lastName,
+        phoneNumber: application.phoneNumber || user.phoneNumber,
+        avatarUrl: application.profilePhotoUrl || user.avatarUrl,
+      },
+    });
+
+    // 8. Seal Application State
     const updated = await this.prisma.riderApplication.update({
       where: { id: applicationId },
       data: {

@@ -7,9 +7,11 @@ import { AdminFinanceService } from './finance.service';
 import { AdminReportsService } from './reports.service';
 import { AdminOperationsGateway } from './operations.gateway';
 import { TrackingModule } from 'src/tracking/tracking.module'; // Import the module, not just the service
+import { NotificationModule } from 'src/notification/notification.module';
 
 @Module({
   imports: [
+    NotificationModule,
     // forwardRef safeguards against circular loops between Admin and Tracking modules
     forwardRef(() => TrackingModule),
   ],

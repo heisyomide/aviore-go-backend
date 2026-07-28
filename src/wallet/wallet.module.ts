@@ -9,10 +9,12 @@ import { FlutterwaveService } from '../flutterwave/flutterwave.service';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
 import { NotificationModule } from 'src/notification/notification.module';
+import { DispatchModule } from 'src/dispatch/dispatch.module';
 
 @Module({
   imports: [
     ConfigModule,
+    DispatchModule,
     HttpModule,
     NotificationModule,
   ],

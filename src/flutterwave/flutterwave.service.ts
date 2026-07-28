@@ -2,26 +2,29 @@ import {
   Injectable,
   BadRequestException,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { PrismaService } from '../providers/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/dto/send-notification.dto';
-import { DispatchService } from '../dispatch/dispatch.service'; // 👈 Import DispatchService
-import { ShipmentStatus } from '@prisma/client';
+import { DispatchService } from '../dispatch/dispatch.service';
+import { ShipmentStatus, PaymentStatus } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { TransferDto } from './dto/transfer.dto';
 
 @Injectable()
 export class FlutterwaveService {
+  private readonly logger = new Logger(FlutterwaveService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly http: HttpService,
     private readonly notificationService: NotificationService,
-    private readonly dispatchService: DispatchService, // 👈 Injected
+    private readonly dispatchService: DispatchService,
   ) {}
 
   private get headers() {
@@ -32,21 +35,31 @@ export class FlutterwaveService {
   }
 
   /**
-   * Helper: Activates shipment and dispatches to riders after verified payment
+   * Helper: Activates shipment and dispatches to riders AFTER verified payment
    */
   private async activateAndDispatchShipment(shipmentId: string) {
     if (!shipmentId) return;
 
-    // Check if shipment is currently AWAITING_PAYMENT to avoid duplicate dispatches
+    // Fetch shipment from DB
     const currentShipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
     });
 
-    if (!currentShipment || currentShipment.status !== ShipmentStatus.PENDING) {
+    if (!currentShipment) {
+      this.logger.warn(`Shipment ${shipmentId} not found for payment activation.`);
       return;
     }
 
-    // 1. Update Shipment Status to PENDING
+    // 🟢 ONLY activate if current status is AWAITING_PAYMENT.
+    // Prevents duplicate dispatching if the shipment is already PENDING, ACCEPTED, etc.
+    if (currentShipment.status !== ShipmentStatus.AWAITING_PAYMENT) {
+      this.logger.log(
+        `Shipment ${shipmentId} status is already '${currentShipment.status}'. Skipping dispatch activation.`,
+      );
+      return;
+    }
+
+    // 1. Transition Shipment Status from AWAITING_PAYMENT -> PENDING
     const updatedShipment = await this.prisma.shipment.update({
       where: { id: shipmentId },
       data: {
@@ -54,18 +67,19 @@ export class FlutterwaveService {
         timelineEvents: {
           create: {
             status: ShipmentStatus.PENDING,
-            description: 'Payment verified successfully. Shipment dispatched to nearby drivers.',
+            description: 'Payment verified successfully. Searching for available riders.',
             changedBy: 'SYSTEM',
           },
         },
       },
     });
 
-    // 2. Dispatch to riders NOW because payment is confirmed!
+    // 2. Dispatch to riders NOW because payment is confirmed
     try {
       await this.dispatchService.dispatchShipment(updatedShipment);
+      this.logger.log(`Shipment ${shipmentId} successfully activated & dispatched.`);
     } catch (err) {
-      console.error('[DISPATCH_ERROR_AFTER_PAYMENT]', err);
+      this.logger.error(`[DISPATCH_ERROR_AFTER_PAYMENT] Shipment: ${shipmentId}`, err);
     }
   }
 
@@ -88,7 +102,7 @@ export class FlutterwaveService {
       customizations: {
         title: 'Aviorè Go',
         description: 'Shipment Payment',
-        logo: 'https://yourdomain.com/logo.png',
+        logo: 'https://aviorego.com.ng/images/logo.png',
       },
       meta: {
         shipmentId: dto.shipmentId,
@@ -104,6 +118,16 @@ export class FlutterwaveService {
         ),
       );
 
+      const flwData = response.data;
+
+      // Safely extract the full payment link from Flutterwave
+      const paymentLink = flwData?.data?.link;
+
+      if (!paymentLink) {
+        throw new BadRequestException('Flutterwave failed to return a valid payment link.');
+      }
+
+      // 1. Record payment in DB with PENDING status
       await this.prisma.payment.create({
         data: {
           shipmentId: dto.shipmentId,
@@ -112,12 +136,29 @@ export class FlutterwaveService {
           amount: dto.amount,
           currency: 'NGN',
           gateway: 'FLUTTERWAVE',
-          status: 'PENDING',
+          status: PaymentStatus.PENDING,
         },
       });
 
-      return response.data;
+      // 2. Keep shipment in AWAITING_PAYMENT until webhook or verification confirms payment
+      if (dto.shipmentId) {
+        await this.prisma.shipment.update({
+          where: { id: dto.shipmentId },
+          data: { status: ShipmentStatus.AWAITING_PAYMENT },
+        }).catch(() => {});
+      }
+
+      // Return clean response to frontend
+      return {
+        status: 'success',
+        message: 'Payment link generated',
+        data: {
+          link: paymentLink,
+          txRef,
+        },
+      };
     } catch (error: any) {
+      this.logger.error('Flutterwave Initialization Error:', error?.response?.data || error);
       throw new InternalServerErrorException(
         error.response?.data?.message ??
           error.response?.data ??
@@ -142,12 +183,13 @@ export class FlutterwaveService {
       const paymentData = response.data.data;
       const isSuccessful = paymentData.status === 'successful';
 
+      // Update Payment Record
       const updatedPayment = await this.prisma.payment.update({
         where: {
           txRef: paymentData.tx_ref,
         },
         data: {
-          status: isSuccessful ? 'SUCCESS' : 'FAILED',
+          status: isSuccessful ? PaymentStatus.SUCCESS : PaymentStatus.FAILED,
           flutterwaveTxId: String(paymentData.id),
           flutterwaveRef: paymentData.flw_ref,
         },
@@ -158,7 +200,7 @@ export class FlutterwaveService {
         await this.activateAndDispatchShipment(updatedPayment.shipmentId);
       }
 
-      // 🔔 Dispatch Notification if payment succeeded
+      // 🔔 Send Payment Receipt Notification
       if (isSuccessful && updatedPayment.customerId) {
         this.notificationService
           .dispatch({
@@ -171,7 +213,7 @@ export class FlutterwaveService {
               shipmentId: updatedPayment.shipmentId,
             },
           })
-          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+          .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
       }
 
       return paymentData;
@@ -238,7 +280,7 @@ export class FlutterwaveService {
           body: `Your withdrawal of ₦${dto.amount} to ${dto.bankName} (${dto.accountNumber}) has been initiated via Flutterwave.`,
           data: { withdrawalId: withdrawal.id },
         })
-        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+        .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
 
       return response.data;
     } catch (error: any) {
@@ -312,13 +354,11 @@ export class FlutterwaveService {
 
       if (data.status === 'SUCCESS') {
         await this.prisma.$transaction(async (tx) => {
-          // Update Withdrawal status
           await tx.withdrawal.update({
             where: { id: withdrawal.id },
             data: { status: 'SUCCESS' },
           });
 
-          // Decrement pending balance
           await tx.wallet.update({
             where: { id: withdrawal.walletId },
             data: {
@@ -327,7 +367,6 @@ export class FlutterwaveService {
           });
         });
 
-        // 🔔 Notify Rider
         this.notificationService
           .dispatch({
             type: NotificationType.WITHDRAWAL_UPDATE,
@@ -336,16 +375,14 @@ export class FlutterwaveService {
             body: `Your payout of ₦${withdrawal.amount} to ${withdrawal.bankName} has been completed successfully.`,
             data: { withdrawalId: withdrawal.id },
           })
-          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+          .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
       } else if (data.status === 'FAILED') {
         await this.prisma.$transaction(async (tx) => {
-          // Update Withdrawal status
           await tx.withdrawal.update({
             where: { id: withdrawal.id },
             data: { status: 'FAILED' },
           });
 
-          // Reverse pending balance back to available balance
           await tx.wallet.update({
             where: { id: withdrawal.walletId },
             data: {
@@ -355,7 +392,6 @@ export class FlutterwaveService {
           });
         });
 
-        // 🔔 Notify Rider
         this.notificationService
           .dispatch({
             type: NotificationType.WITHDRAWAL_UPDATE,
@@ -364,7 +400,7 @@ export class FlutterwaveService {
             body: `Your withdrawal request of ₦${withdrawal.amount} failed and funds have been returned to your available balance.`,
             data: { withdrawalId: withdrawal.id },
           })
-          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+          .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
       }
     }
 
@@ -374,17 +410,17 @@ export class FlutterwaveService {
         where: { txRef: data.tx_ref },
       });
 
-      if (payment && payment.status === 'PENDING') {
+      if (payment && payment.status === PaymentStatus.PENDING) {
         await this.prisma.payment.update({
           where: { id: payment.id },
           data: {
-            status: 'SUCCESS',
+            status: PaymentStatus.SUCCESS,
             flutterwaveTxId: String(data.id),
             flutterwaveRef: data.flw_ref,
           },
         });
 
-        // 🚀 Activate & Dispatch Shipment via Webhook
+        // 🚀 Activate & Dispatch Shipment safely via Webhook
         if (payment.shipmentId) {
           await this.activateAndDispatchShipment(payment.shipmentId);
         }

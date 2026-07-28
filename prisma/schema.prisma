@@ -625,6 +625,7 @@ enum AddressType {
 }
 
 enum ShipmentStatus {
+  AWAITING_PAYMENT
   PENDING
   ACCEPTED
   PICKED_UP

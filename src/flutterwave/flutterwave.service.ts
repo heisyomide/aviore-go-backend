@@ -8,6 +8,8 @@ import { HttpService } from '@nestjs/axios';
 import { PrismaService } from '../providers/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/dto/send-notification.dto';
+import { DispatchService } from '../dispatch/dispatch.service'; // 👈 Import DispatchService
+import { ShipmentStatus } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { TransferDto } from './dto/transfer.dto';
@@ -18,7 +20,8 @@ export class FlutterwaveService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly http: HttpService,
-    private readonly notificationService: NotificationService, // 👈 Injected
+    private readonly notificationService: NotificationService,
+    private readonly dispatchService: DispatchService, // 👈 Injected
   ) {}
 
   private get headers() {
@@ -26,6 +29,44 @@ export class FlutterwaveService {
       Authorization: `Bearer ${this.config.get<string>('FLW_SECRET_KEY')}`,
       'Content-Type': 'application/json',
     };
+  }
+
+  /**
+   * Helper: Activates shipment and dispatches to riders after verified payment
+   */
+  private async activateAndDispatchShipment(shipmentId: string) {
+    if (!shipmentId) return;
+
+    // Check if shipment is currently AWAITING_PAYMENT to avoid duplicate dispatches
+    const currentShipment = await this.prisma.shipment.findUnique({
+      where: { id: shipmentId },
+    });
+
+    if (!currentShipment || currentShipment.status !== ShipmentStatus.PENDING) {
+      return;
+    }
+
+    // 1. Update Shipment Status to PENDING
+    const updatedShipment = await this.prisma.shipment.update({
+      where: { id: shipmentId },
+      data: {
+        status: ShipmentStatus.PENDING,
+        timelineEvents: {
+          create: {
+            status: ShipmentStatus.PENDING,
+            description: 'Payment verified successfully. Shipment dispatched to nearby drivers.',
+            changedBy: 'SYSTEM',
+          },
+        },
+      },
+    });
+
+    // 2. Dispatch to riders NOW because payment is confirmed!
+    try {
+      await this.dispatchService.dispatchShipment(updatedShipment);
+    } catch (err) {
+      console.error('[DISPATCH_ERROR_AFTER_PAYMENT]', err);
+    }
   }
 
   /**
@@ -111,6 +152,11 @@ export class FlutterwaveService {
           flutterwaveRef: paymentData.flw_ref,
         },
       });
+
+      // 🚀 Activate & Dispatch Shipment if payment succeeded
+      if (isSuccessful && updatedPayment.shipmentId) {
+        await this.activateAndDispatchShipment(updatedPayment.shipmentId);
+      }
 
       // 🔔 Dispatch Notification if payment succeeded
       if (isSuccessful && updatedPayment.customerId) {
@@ -322,7 +368,7 @@ export class FlutterwaveService {
       }
     }
 
-    // 3. Handle Charge/Payment Events (Optional redundant safety check)
+    // 3. Handle Charge/Payment Events
     if (event === 'charge.completed' && data.status === 'successful') {
       const payment = await this.prisma.payment.findUnique({
         where: { txRef: data.tx_ref },
@@ -337,6 +383,11 @@ export class FlutterwaveService {
             flutterwaveRef: data.flw_ref,
           },
         });
+
+        // 🚀 Activate & Dispatch Shipment via Webhook
+        if (payment.shipmentId) {
+          await this.activateAndDispatchShipment(payment.shipmentId);
+        }
       }
     }
 

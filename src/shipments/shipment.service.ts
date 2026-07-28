@@ -35,7 +35,7 @@ export class ShipmentsService {
     return code;
   }
 
-  async createShipment(customerId: string, dto: CreateShipmentDto) {
+async createShipment(customerId: string, dto: CreateShipmentDto) {
     if (!customerId) {
       throw new Error('customerId parameter is required');
     }
@@ -59,6 +59,8 @@ export class ShipmentsService {
 
     const shipmentData = {
       trackingCode,
+      status: ShipmentStatus.PENDING, // 👈 1. Mark status as AWAITING_PAYMENT
+      paymentStatus: 'UNPAID', // 👈 (If you have a paymentStatus column)
       deliveryType: dto.deliveryType,
       packageCategory: dto.packageCategory,
       weightRange: dto.weightRange,
@@ -112,7 +114,7 @@ export class ShipmentsService {
       timelineEvents: {
         create: {
           status: ShipmentStatus.PENDING,
-          description: `Shipment generated automatically via Pricing Engine. Zone: ${pricingResult.detectedRegion}`,
+          description: `Shipment created. Waiting for payment confirmation. Zone: ${pricingResult.detectedRegion}`,
           changedBy: 'CUSTOMER',
         },
       },
@@ -122,11 +124,11 @@ export class ShipmentsService {
       data: shipmentData,
     });
 
-    await this.dispatchService.dispatchShipment(shipment);
+    // 🛑 REMOVED: await this.dispatchService.dispatchShipment(shipment);
+    // Shipment will be dispatched ONLY when Flutterwave confirms payment!
 
     return shipment;
   }
-
   /**
    * Get Voice Navigation Turn Steps for Rider PWA Map
    */

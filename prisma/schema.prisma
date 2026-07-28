@@ -330,7 +330,7 @@ model Shipment {
   rider      RiderProfile?    @relation("RiderShipments", fields: [riderId], references: [id])
   currentHub TransitHub?      @relation("HubLocation", fields: [currentHubId], references: [id])
   promoCode  PromoCode?       @relation(fields: [promoCodeId], references: [id])
-
+  paymentStatus PaymentStatus  @default(PENDING)
   payments        Payment[]
   reviews         Review[]
   assignments     RiderAssignment[]

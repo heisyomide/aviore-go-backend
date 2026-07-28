@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
-import { Prisma, ShipmentStatus } from '@prisma/client';
+import { Prisma, ShipmentStatus, PaymentStatus } from '@prisma/client';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { PricingService } from '../pricing/pricing.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
@@ -59,8 +59,8 @@ async createShipment(customerId: string, dto: CreateShipmentDto) {
 
     const shipmentData = {
       trackingCode,
-      status: ShipmentStatus.PENDING, // 👈 1. Mark status as AWAITING_PAYMENT
-      paymentStatus: 'UNPAID', // 👈 (If you have a paymentStatus column)
+      status: ShipmentStatus.PENDING,
+      paymentStatus: PaymentStatus.PENDING, // 👈 1. Mark status as AWAITING_PAYMENT // 👈 (If you have a paymentStatus column)
       deliveryType: dto.deliveryType,
       packageCategory: dto.packageCategory,
       weightRange: dto.weightRange,

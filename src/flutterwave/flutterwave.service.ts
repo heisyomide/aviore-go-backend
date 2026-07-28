@@ -3,73 +3,55 @@ import {
   BadRequestException,
   InternalServerErrorException,
   Logger,
+  NotFoundException
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { PrismaService } from '../providers/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/dto/send-notification.dto';
-import { DispatchService } from '../dispatch/dispatch.service';
-import { ShipmentStatus, PaymentStatus } from '@prisma/client';
+import { DispatchService } from '../dispatch/dispatch.service'; // 👈 Import DispatchService
+import { ShipmentStatus } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { TransferDto } from './dto/transfer.dto';
+import { randomUUID } from 'crypto'; // 👈 Added
+import axios from 'axios';
 
 @Injectable()
 export class FlutterwaveService {
   private readonly logger = new Logger(FlutterwaveService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly http: HttpService,
     private readonly notificationService: NotificationService,
-    private readonly dispatchService: DispatchService,
+    private readonly dispatchService: DispatchService, // 👈 Injected
   ) {}
 
-private get headers() {
-  const secretKey =
-    this.config.get<string>('FLW_SECRET_KEY') ||
-    this.config.get<string>('FLUTTERWAVE_SECRET_KEY');
-
-  if (!secretKey) {
-    this.logger.error(
-      'FLW_SECRET_KEY / FLUTTERWAVE_SECRET_KEY is not defined in environment variables!',
-    );
+  private get headers() {
+    return {
+      Authorization: `Bearer ${this.config.get<string>('FLW_SECRET_KEY')}`,
+      'Content-Type': 'application/json',
+    };
   }
 
-  return {
-    Authorization: `Bearer ${secretKey}`,
-    'Content-Type': 'application/json',
-  };
-}
-
   /**
-   * Helper: Activates shipment and dispatches to riders AFTER verified payment
+   * Helper: Activates shipment and dispatches to riders after verified payment
    */
   private async activateAndDispatchShipment(shipmentId: string) {
     if (!shipmentId) return;
 
-    // Fetch shipment from DB
+    // Check if shipment is currently AWAITING_PAYMENT to avoid duplicate dispatches
     const currentShipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
     });
 
-    if (!currentShipment) {
-      this.logger.warn(`Shipment ${shipmentId} not found for payment activation.`);
+    if (!currentShipment || currentShipment.status !== ShipmentStatus.PENDING) {
       return;
     }
 
-    // 🟢 ONLY activate if current status is AWAITING_PAYMENT.
-    // Prevents duplicate dispatching if the shipment is already PENDING, ACCEPTED, etc.
-    if (currentShipment.status !== ShipmentStatus.AWAITING_PAYMENT) {
-      this.logger.log(
-        `Shipment ${shipmentId} status is already '${currentShipment.status}'. Skipping dispatch activation.`,
-      );
-      return;
-    }
-
-    // 1. Transition Shipment Status from AWAITING_PAYMENT -> PENDING
+    // 1. Update Shipment Status to PENDING
     const updatedShipment = await this.prisma.shipment.update({
       where: { id: shipmentId },
       data: {
@@ -77,180 +59,161 @@ private get headers() {
         timelineEvents: {
           create: {
             status: ShipmentStatus.PENDING,
-            description: 'Payment verified successfully. Searching for available riders.',
+            description: 'Payment verified successfully. Shipment dispatched to nearby drivers.',
             changedBy: 'SYSTEM',
           },
         },
       },
     });
 
-    // 2. Dispatch to riders NOW because payment is confirmed
+    // 2. Dispatch to riders NOW because payment is confirmed!
     try {
       await this.dispatchService.dispatchShipment(updatedShipment);
-      this.logger.log(`Shipment ${shipmentId} successfully activated & dispatched.`);
     } catch (err) {
-      this.logger.error(`[DISPATCH_ERROR_AFTER_PAYMENT] Shipment: ${shipmentId}`, err);
+      console.error('[DISPATCH_ERROR_AFTER_PAYMENT]', err);
     }
   }
 
   /**
    * Initialize Payment Link for Customer Shipment
    */
-  // src/flutterwave/flutterwave.service.ts
-
 async initializePayment(dto: InitializePaymentDto) {
-  const txRef = `AV-${Date.now()}`;
+  const { shipmentId, email, name, redirectUrl } = dto;
+
+  // 1. Fetch shipment
+  const shipment = await this.prisma.shipment.findUnique({
+    where: { id: shipmentId },
+  });
+
+  if (!shipment) {
+    throw new NotFoundException('SHIPMENT_NOT_FOUND');
+  }
+
+  const rawTotal = shipment.totalPrice;
+  if (!rawTotal || Number(rawTotal) <= 0) {
+    throw new BadRequestException('SHIPMENT_AMOUNT_INVALID');
+  }
+
+  const txRef = `AVR-${randomUUID()}`;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
 
   const payload = {
     tx_ref: txRef,
-    amount: Number(dto.amount),
+    amount: Number(rawTotal),
     currency: 'NGN',
-    redirect_url: dto.redirectUrl,
+    redirect_url: finalRedirectUrl,
     customer: {
-      email: dto.email || 'customer@aviorego.com.ng',
-      name: dto.customerName || 'Customer',
-      phonenumber: dto.phone || '00000000000',
+      email: email || 'customer@aviorego.com.ng',
+      name: name || 'Valued Customer',
     },
     customizations: {
-      title: 'Aviorè Go',
-      description: 'Shipment Payment',
-      logo: 'https://aviorego.com.ng/images/logo.png',
+      title: 'Pay AVIORÈ',
+      description: `Payment for Shipment #${shipment.id.slice(-6).toUpperCase()}`,
     },
     meta: {
-      shipmentId: dto.shipmentId,
+      shipmentId: shipment.id,
     },
   };
 
   try {
-    const response = await firstValueFrom(
-      this.http.post(
-        'https://api.flutterwave.com/v3/payments',
-        payload,
-        { headers: this.headers },
-      ),
-    );
-
-    const flwData = response.data;
-    const paymentLink = flwData?.data?.link;
-
-    if (!paymentLink) {
-      throw new BadRequestException('Flutterwave failed to return a valid payment link.');
+    const secretKey = process.env.FLW_SECRET_KEY;
+    if (!secretKey) {
+      throw new Error('FLW_SECRET_KEY is missing in backend .env');
     }
 
-    // 1. Record payment in DB with PENDING status
+    const response = await axios.post(
+      'https://api.flutterwave.com/v3/payments',
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${secretKey.trim()}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    const paymentLink = response.data?.data?.link;
+    if (!paymentLink) {
+      throw new Error('PAYMENT_LINK_NOT_GENERATED');
+    }
+
+    console.log('✅ LIVE Flutterwave Hosted Link:', paymentLink);
+
+    // Save payment record
     await this.prisma.payment.create({
       data: {
-        shipmentId: dto.shipmentId,
-        customerId: dto.customerId,
-        txRef,
-        amount: dto.amount,
+        shipmentId: shipment.id,
+        customerId: shipment.customerId,
+        txRef: txRef,
+        amount: Number(rawTotal),
         currency: 'NGN',
         gateway: 'FLUTTERWAVE',
-        status: PaymentStatus.PENDING,
+        status: 'PENDING',
       },
     });
 
-    // 2. Keep shipment in AWAITING_PAYMENT until webhook or verification confirms payment
-    if (dto.shipmentId) {
-      await this.prisma.shipment
-        .update({
-          where: { id: dto.shipmentId },
-          data: { status: ShipmentStatus.AWAITING_PAYMENT },
-        })
-        .catch(() => {});
-    }
-
-    return {
-      status: 'success',
-      message: 'Payment link generated',
-      data: {
-        link: paymentLink,
-        txRef,
-      },
-    };
+    return { link: paymentLink };
   } catch (error: any) {
-    this.logger.error('Flutterwave Initialization Error:', error?.response?.data || error);
+    const flwErrorMessage = error.response?.data?.message || error.message;
+    this.logger.error(`PAYMENT_INIT_ERROR: ${flwErrorMessage}`);
     throw new InternalServerErrorException(
-      error.response?.data?.message ??
-        error.response?.data ??
-        error.message ??
-        'Flutterwave initialization failed',
+      `PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`,
     );
   }
 }
+  /**
+   * Verify Payment Status
+   */
+  async verifyPayment(transactionId: string) {
+    try {
+      const response = await firstValueFrom(
+        this.http.get(
+          `https://api.flutterwave.com/v3/transactions/${transactionId}/verify`,
+          { headers: this.headers },
+        ),
+      );
 
-async verifyPayment(transactionId: string) {
-  try {
-    const response = await firstValueFrom(
-      this.http.get(
-        `https://api.flutterwave.com/v3/transactions/${transactionId}/verify`,
-        { headers: this.headers },
-      ),
-    );
+      const paymentData = response.data.data;
+      const isSuccessful = paymentData.status === 'successful';
 
-    const paymentData = response.data?.data;
-    if (!paymentData) {
-      throw new BadRequestException('Transaction record not found on Flutterwave.');
+      const updatedPayment = await this.prisma.payment.update({
+        where: {
+          txRef: paymentData.tx_ref,
+        },
+        data: {
+          status: isSuccessful ? 'SUCCESS' : 'FAILED',
+          flutterwaveTxId: String(paymentData.id),
+          flutterwaveRef: paymentData.flw_ref,
+        },
+      });
+
+      // 🚀 Activate & Dispatch Shipment if payment succeeded
+      if (isSuccessful && updatedPayment.shipmentId) {
+        await this.activateAndDispatchShipment(updatedPayment.shipmentId);
+      }
+
+      // 🔔 Dispatch Notification if payment succeeded
+      if (isSuccessful && updatedPayment.customerId) {
+        this.notificationService
+          .dispatch({
+            type: NotificationType.PAYMENT_RECEIPT,
+            userId: updatedPayment.customerId,
+            title: 'Payment Successful',
+            body: `Your payment of ₦${paymentData.amount} was confirmed successfully.`,
+            data: {
+              paymentId: updatedPayment.id,
+              shipmentId: updatedPayment.shipmentId,
+            },
+          })
+          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+      }
+
+      return paymentData;
+    } catch (error) {
+      throw new BadRequestException('Payment verification failed');
     }
-
-    const isSuccessful =
-      paymentData.status === 'successful' &&
-      paymentData.currency === 'NGN';
-
-    const existingPayment = await this.prisma.payment.findFirst({
-      where: {
-        OR: [
-          { txRef: paymentData.tx_ref },
-          { flutterwaveTxId: String(paymentData.id) },
-        ],
-      },
-    });
-
-    if (!existingPayment) {
-      this.logger.error(`No payment record found for txRef: ${paymentData.tx_ref}`);
-      throw new BadRequestException('Local payment record not found');
-    }
-
-    const updatedPayment = await this.prisma.payment.update({
-      where: { id: existingPayment.id },
-      data: {
-        status: isSuccessful ? PaymentStatus.SUCCESS : PaymentStatus.FAILED,
-        flutterwaveTxId: String(paymentData.id),
-        flutterwaveRef: paymentData.flw_ref,
-      },
-    });
-
-    if (
-      isSuccessful &&
-      updatedPayment.shipmentId &&
-      existingPayment.status !== PaymentStatus.SUCCESS
-    ) {
-      await this.activateAndDispatchShipment(updatedPayment.shipmentId);
-    }
-
-    if (isSuccessful && updatedPayment.customerId) {
-      this.notificationService
-        .dispatch({
-          type: NotificationType.PAYMENT_RECEIPT,
-          userId: updatedPayment.customerId,
-          title: 'Payment Successful',
-          body: `Your payment of ₦${paymentData.amount} was confirmed successfully.`,
-          data: {
-            paymentId: updatedPayment.id,
-            shipmentId: updatedPayment.shipmentId,
-          },
-        })
-        .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
-    }
-
-    return paymentData;
-  } catch (error: any) {
-    this.logger.error('[VERIFY_PAYMENT_ERROR]', error?.response?.data || error);
-    throw new BadRequestException(
-      error.response?.data?.message || error.message || 'Payment verification failed',
-    );
   }
-}
 
   /**
    * Initiate Bank Transfer / Payout
@@ -310,7 +273,7 @@ async verifyPayment(transactionId: string) {
           body: `Your withdrawal of ₦${dto.amount} to ${dto.bankName} (${dto.accountNumber}) has been initiated via Flutterwave.`,
           data: { withdrawalId: withdrawal.id },
         })
-        .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
+        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
       return response.data;
     } catch (error: any) {
@@ -384,11 +347,13 @@ async verifyPayment(transactionId: string) {
 
       if (data.status === 'SUCCESS') {
         await this.prisma.$transaction(async (tx) => {
+          // Update Withdrawal status
           await tx.withdrawal.update({
             where: { id: withdrawal.id },
             data: { status: 'SUCCESS' },
           });
 
+          // Decrement pending balance
           await tx.wallet.update({
             where: { id: withdrawal.walletId },
             data: {
@@ -397,6 +362,7 @@ async verifyPayment(transactionId: string) {
           });
         });
 
+        // 🔔 Notify Rider
         this.notificationService
           .dispatch({
             type: NotificationType.WITHDRAWAL_UPDATE,
@@ -405,14 +371,16 @@ async verifyPayment(transactionId: string) {
             body: `Your payout of ₦${withdrawal.amount} to ${withdrawal.bankName} has been completed successfully.`,
             data: { withdrawalId: withdrawal.id },
           })
-          .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
+          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
       } else if (data.status === 'FAILED') {
         await this.prisma.$transaction(async (tx) => {
+          // Update Withdrawal status
           await tx.withdrawal.update({
             where: { id: withdrawal.id },
             data: { status: 'FAILED' },
           });
 
+          // Reverse pending balance back to available balance
           await tx.wallet.update({
             where: { id: withdrawal.walletId },
             data: {
@@ -422,6 +390,7 @@ async verifyPayment(transactionId: string) {
           });
         });
 
+        // 🔔 Notify Rider
         this.notificationService
           .dispatch({
             type: NotificationType.WITHDRAWAL_UPDATE,
@@ -430,7 +399,7 @@ async verifyPayment(transactionId: string) {
             body: `Your withdrawal request of ₦${withdrawal.amount} failed and funds have been returned to your available balance.`,
             data: { withdrawalId: withdrawal.id },
           })
-          .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
+          .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
       }
     }
 
@@ -440,17 +409,17 @@ async verifyPayment(transactionId: string) {
         where: { txRef: data.tx_ref },
       });
 
-      if (payment && payment.status === PaymentStatus.PENDING) {
+      if (payment && payment.status === 'PENDING') {
         await this.prisma.payment.update({
           where: { id: payment.id },
           data: {
-            status: PaymentStatus.SUCCESS,
+            status: 'SUCCESS',
             flutterwaveTxId: String(data.id),
             flutterwaveRef: data.flw_ref,
           },
         });
 
-        // 🚀 Activate & Dispatch Shipment safely via Webhook
+        // 🚀 Activate & Dispatch Shipment via Webhook
         if (payment.shipmentId) {
           await this.activateAndDispatchShipment(payment.shipmentId);
         }

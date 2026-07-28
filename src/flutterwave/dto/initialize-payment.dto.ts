@@ -13,15 +13,18 @@ export class InitializePaymentDto {
   @IsEmail()
   email!: string;
 
+  @IsOptional()
   @IsNumber()
-  @Min(100)
-  amount!: number;
+  @Min(100, { message: 'amount must not be less than 100' })
+  amount?: number;
 
+  @IsOptional()
   @IsString()
-  customerName!: string;
+  customerName?: string;
 
-    @IsString()
-  customerId!: string;
+  @IsOptional()
+  @IsString()
+  customerId?: string;
 
   @IsOptional()
   @IsString()
@@ -30,4 +33,8 @@ export class InitializePaymentDto {
   @IsOptional()
   @IsString()
   redirectUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
 }

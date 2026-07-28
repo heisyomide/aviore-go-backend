@@ -25,22 +25,22 @@ async function bootstrap() {
         return callback(null, true);
       }
 
-      // 3. Match your Vercel URL patterns (Handles preview links and www variants)
+      // 3. Match Vercel URL patterns
       if (
         origin.includes('aviorego-frontend.vercel.app') ||
-        origin.includes('aviorego') // Broad check to match preview branches if needed
+        origin.includes('aviorego')
       ) {
         return callback(null, true);
       }
 
-      // 4. Custom domain placeholder (If you purchase aviorego.com later, add it here)
-      // if (origin.includes('yourcustomdomain.com')) return callback(null, true);
-
-      // If it doesn't match any of the safe zones, print it out explicitly to Render logs before blocking
-      console.error(`[CORS Blocked]: Request coming from unauthorized origin -> ${origin}`);
-      return callback(new Error('Blocked by CORS policy'));
+      // Print explicitly to logs before blocking
+      console.error(`[CORS Blocked]: Unauthorized origin -> ${origin}`);
+      
+      // FIX: Pass false instead of throwing Error to prevent 500 crash on preflight (OPTIONS) requests
+      return callback(null, false);
     },
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     credentials: true,
   });
 

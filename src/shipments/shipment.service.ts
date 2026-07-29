@@ -36,99 +36,97 @@ export class ShipmentsService {
   }
 
 async createShipment(customerId: string, dto: CreateShipmentDto) {
-    if (!customerId) {
-      throw new Error('customerId parameter is required');
-    }
-
-    const trackingCode = await this.generateTrackingCode();
-
-    const pricingResult = this.PricingService.calculate({
-      pickupLat: dto.pickupLat,
-      pickupLng: dto.pickupLng,
-      destinationLat: dto.destinationLat,
-      destinationLng: dto.destinationLng,
-      packageCategory: dto.packageCategory,
-      weightRange: dto.weightRange,
-      isExpress: dto.isExpress || false,
-      waterproof: dto.waterproof || false,
-    });
-
-    const totalPayable = pricingResult.totalDeliveryFee;
-    const platformShare = totalPayable * 0.2;
-    const riderShare = totalPayable * 0.8;
-
-    const shipmentData = {
-      trackingCode,
-      status: ShipmentStatus.PENDING,
-      paymentStatus: PaymentStatus.PENDING, // 👈 1. Mark status as AWAITING_PAYMENT // 👈 (If you have a paymentStatus column)
-      deliveryType: dto.deliveryType,
-      packageCategory: dto.packageCategory,
-      weightRange: dto.weightRange,
-      description: dto.description || '',
-
-      pickupAddress: dto.pickupAddress,
-      pickupLandmark: dto.pickupLandmark || null,
-      pickupLat: dto.pickupLat,
-      pickupLng: dto.pickupLng,
-      pickupPlaceId: dto.pickupPlaceId || null,
-      senderName: dto.senderName,
-      senderPhone: dto.senderPhone,
-
-      destinationAddress: dto.destinationAddress,
-      destinationLandmark: dto.destinationLandmark || null,
-      destinationLat: dto.destinationLat,
-      destinationLng: dto.destinationLng,
-      destinationPlaceId: dto.destinationPlaceId || null,
-      recipient: dto.receiverName,
-      recipientPhone: dto.receiverPhone,
-
-      regionType: pricingResult.detectedRegion,
-
-      isFragile: dto.isFragile || false,
-      keepUpright: dto.keepUpright || false,
-      handleWithCare: dto.handleWithCare || false,
-      waterproof: dto.waterproof || false,
-      isExpress: dto.isExpress || false,
-
-      isSmartDelivery: dto.deliveryMethod === 'smart',
-      specialNotes: dto.deliveryNote || '',
-      verificationPin: dto.verificationPin,
-
-      baseFee: new Prisma.Decimal(pricingResult.breakdown.baseFee),
-      pickupDistFee: new Prisma.Decimal(pricingResult.breakdown.pickupDistanceFee),
-      deliveryDistFee: new Prisma.Decimal(pricingResult.breakdown.deliveryDistanceFee),
-      extraCharges: new Prisma.Decimal(pricingResult.breakdown.extraCharges),
-      totalPrice: new Prisma.Decimal(totalPayable),
-      riderShare: new Prisma.Decimal(riderShare),
-      platformShare: new Prisma.Decimal(platformShare),
-
-      distanceKm: pricingResult.distanceKm,
-      estimatedMinutes: pricingResult.estimatedMinutes,
-
-      customer: {
-        connect: {
-          id: customerId,
-        },
-      },
-
-      timelineEvents: {
-        create: {
-          status: ShipmentStatus.PENDING,
-          description: `Shipment created. Waiting for payment confirmation. Zone: ${pricingResult.detectedRegion}`,
-          changedBy: 'CUSTOMER',
-        },
-      },
-    };
-
-    const shipment = await this.prisma.shipment.create({
-      data: shipmentData,
-    });
-
-    // 🛑 REMOVED: await this.dispatchService.dispatchShipment(shipment);
-    // Shipment will be dispatched ONLY when Flutterwave confirms payment!
-
-    return shipment;
+  if (!customerId) {
+    throw new Error('customerId parameter is required');
   }
+
+  const trackingCode = await this.generateTrackingCode();
+
+  const pricingResult = this.PricingService.calculate({
+    pickupLat: dto.pickupLat,
+    pickupLng: dto.pickupLng,
+    destinationLat: dto.destinationLat,
+    destinationLng: dto.destinationLng,
+    packageCategory: dto.packageCategory,
+    weightRange: dto.weightRange,
+    isExpress: dto.isExpress || false,
+    waterproof: dto.waterproof || false,
+  });
+
+  const totalPayable = pricingResult.totalDeliveryFee;
+  const platformShare = totalPayable * 0.2;
+  const riderShare = totalPayable * 0.8;
+
+  const shipmentData = {
+    trackingCode,
+    status: ShipmentStatus.AWAITING_PAYMENT, // 👈 1. Set to AWAITING_PAYMENT so riders cannot see it
+    paymentStatus: PaymentStatus.PENDING,
+    deliveryType: dto.deliveryType,
+    packageCategory: dto.packageCategory,
+    weightRange: dto.weightRange,
+    description: dto.description || '',
+
+    pickupAddress: dto.pickupAddress,
+    pickupLandmark: dto.pickupLandmark || null,
+    pickupLat: dto.pickupLat,
+    pickupLng: dto.pickupLng,
+    pickupPlaceId: dto.pickupPlaceId || null,
+    senderName: dto.senderName,
+    senderPhone: dto.senderPhone,
+
+    destinationAddress: dto.destinationAddress,
+    destinationLandmark: dto.destinationLandmark || null,
+    destinationLat: dto.destinationLat,
+    destinationLng: dto.destinationLng,
+    destinationPlaceId: dto.destinationPlaceId || null,
+    recipient: dto.receiverName,
+    recipientPhone: dto.receiverPhone,
+
+    regionType: pricingResult.detectedRegion,
+
+    isFragile: dto.isFragile || false,
+    keepUpright: dto.keepUpright || false,
+    handleWithCare: dto.handleWithCare || false,
+    waterproof: dto.waterproof || false,
+    isExpress: dto.isExpress || false,
+
+    isSmartDelivery: dto.deliveryMethod === 'smart',
+    specialNotes: dto.deliveryNote || '',
+    verificationPin: dto.verificationPin,
+
+    baseFee: new Prisma.Decimal(pricingResult.breakdown.baseFee),
+    pickupDistFee: new Prisma.Decimal(pricingResult.breakdown.pickupDistanceFee),
+    deliveryDistFee: new Prisma.Decimal(pricingResult.breakdown.deliveryDistanceFee),
+    extraCharges: new Prisma.Decimal(pricingResult.breakdown.extraCharges),
+    totalPrice: new Prisma.Decimal(totalPayable),
+    riderShare: new Prisma.Decimal(riderShare),
+    platformShare: new Prisma.Decimal(platformShare),
+
+    distanceKm: pricingResult.distanceKm,
+    estimatedMinutes: pricingResult.estimatedMinutes,
+
+    customer: {
+      connect: {
+        id: customerId,
+      },
+    },
+
+    timelineEvents: {
+      create: {
+        status: ShipmentStatus.AWAITING_PAYMENT, // 👈 2. Match timeline status to initial shipment status
+        description: `Shipment created. Waiting for payment confirmation. Zone: ${pricingResult.detectedRegion}`,
+        changedBy: 'CUSTOMER',
+      },
+    },
+  };
+
+  const shipment = await this.prisma.shipment.create({
+    data: shipmentData,
+  });
+
+  // Shipment will be dispatched ONLY when Flutterwave confirms payment!
+  return shipment;
+}
   /**
    * Get Voice Navigation Turn Steps for Rider PWA Map
    */

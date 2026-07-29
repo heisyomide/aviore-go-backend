@@ -61,38 +61,50 @@ export class FlutterwaveService {
   /**
    * Helper: Activates shipment and dispatches to riders after verified payment
    */
-  private async activateAndDispatchShipment(shipmentId: string) {
-    if (!shipmentId) return;
+/**
+ * Helper: Activates shipment and dispatches to riders after verified payment
+ */
+private async activateAndDispatchShipment(shipmentId: string) {
+  if (!shipmentId) return;
 
-    const currentShipment = await this.prisma.shipment.findUnique({
-      where: { id: shipmentId },
-    });
+  const currentShipment = await this.prisma.shipment.findUnique({
+    where: { id: shipmentId },
+  });
 
-    if (!currentShipment || currentShipment.status !== ShipmentStatus.PENDING) {
-      return;
-    }
+  // ONLY promote if the shipment is currently in AWAITING_PAYMENT status
+  if (!currentShipment || currentShipment.status !== ShipmentStatus.AWAITING_PAYMENT) {
+    this.logger.warn(
+      `[SKIP_DISPATCH] Shipment ${shipmentId} status is ${currentShipment?.status}, expected AWAITING_PAYMENT`,
+    );
+    return;
+  }
 
-    const updatedShipment = await this.prisma.shipment.update({
-      where: { id: shipmentId },
-      data: {
-        status: ShipmentStatus.PENDING,
-        timelineEvents: {
-          create: {
-            status: ShipmentStatus.PENDING,
-            description:
-              'Payment verified successfully. Shipment dispatched to nearby drivers.',
-            changedBy: 'SYSTEM',
-          },
+  // Promote status from AWAITING_PAYMENT -> PENDING (now visible to riders)
+  const updatedShipment = await this.prisma.shipment.update({
+    where: { id: shipmentId },
+    data: {
+      status: ShipmentStatus.PENDING,
+      timelineEvents: {
+        create: {
+          status: ShipmentStatus.PENDING,
+          description:
+            'Payment verified successfully. Shipment active and dispatched to nearby riders.',
+          changedBy: 'SYSTEM',
         },
       },
-    });
+    },
+  });
 
-    try {
+  try {
+    // Notify riders / send push notifications / socket dispatch
+    if (this.dispatchService) {
       await this.dispatchService.dispatchShipment(updatedShipment);
-    } catch (err) {
-      this.logger.error('[DISPATCH_ERROR_AFTER_PAYMENT]', err);
+      this.logger.log(`🚀 Shipment ${shipmentId} successfully dispatched to riders!`);
     }
+  } catch (err) {
+    this.logger.error('[DISPATCH_ERROR_AFTER_PAYMENT]', err);
   }
+}
 
   /**
    * Initialize Payment Link for Customer Shipment

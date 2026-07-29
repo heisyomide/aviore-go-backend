@@ -3,7 +3,7 @@ import { PrismaService } from '../providers/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { AdminBroadcastDto } from './dto/broadcast.dto';
 import { BroadcastChannel } from '../notification/dto/admin-broadcast.dto';
-import { ChannelType } from '@prisma/client';
+import { ChannelType, IdentityStatus } from '@prisma/client';
 
 @Injectable()
 export class AdminBroadcastService {
@@ -20,8 +20,11 @@ export class AdminBroadcastService {
   async sendBroadcast(dto: AdminBroadcastDto, adminUserId: string) {
     const { title, body, targetAudience, channels } = dto;
 
-    // 1. Build database filter according to target selection
-    const whereClause: any = { isActive: true };
+    // 1. Build database filter targeting verified active accounts
+    const whereClause: any = {
+      status: IdentityStatus.VERIFIED,
+    };
+
     if (targetAudience) {
       whereClause.role = targetAudience;
     }
@@ -37,7 +40,7 @@ export class AdminBroadcastService {
 
     if (!recipients.length) {
       throw new BadRequestException(
-        `No active users found for target audience: ${targetAudience || 'GLOBAL_ALL'}`,
+        `No verified users found for target audience: ${targetAudience || 'GLOBAL_ALL'}`,
       );
     }
 
@@ -52,7 +55,7 @@ export class AdminBroadcastService {
       channels,
     };
 
-    // 3. PUSH: Pass enum value BroadcastChannel.PUSH (or BroadcastChannel.PUSH_NOTIFICATION)
+    // 3. PUSH: Dispatch to push notifications layer
     if (channels.includes(ChannelType.PUSH) && recipientUserIds.length) {
       dispatchResults.push = await this.notificationService.sendAdminBroadcast({
         title,
@@ -63,7 +66,7 @@ export class AdminBroadcastService {
       });
     }
 
-    // 4. EMAIL: Pass enum value BroadcastChannel.EMAIL_BREVO (or BroadcastChannel.EMAIL)
+    // 4. EMAIL: Dispatch to email provider layer
     if (channels.includes(ChannelType.EMAIL) && recipientEmails.length) {
       dispatchResults.email = await this.notificationService.sendAdminBroadcast({
         title,

@@ -1,28 +1,37 @@
+// src/auth/strategies/jwt.strategy.ts
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { PrismaService } from '../../providers/database/prisma.service'; // 👈 Adjust path to your PrismaService
+import { Request } from 'express';
+import { PrismaService } from '../../providers/database/prisma.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private readonly prisma: PrismaService) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        // 1. Extract from Authorization: Bearer <token>
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        // 2. Extract from Cookie (fallback)
+        (req: Request) => {
+          if (req && req.cookies) {
+            return req.cookies['access_token'] || req.cookies['adminToken'] || null;
+          }
+          return null;
+        },
+      ]),
       ignoreExpiration: false,
       secretOrKey: process.env.JWT_SECRET || 'your_super_secret_key',
     });
   }
 
   async validate(payload: any) {
-    console.log('[DEBUG JWT] Validating Payload:', payload);
-
     const id = payload.sub || payload.id || payload.userId;
 
     if (!id) {
       throw new UnauthorizedException('Invalid token structure');
     }
 
-    // Check user in DB
     const user = await this.prisma.user.findUnique({
       where: { id },
     });
@@ -31,7 +40,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User account no longer exists.');
     }
 
-    // 🟢 Attach both `id` and `userId` to support all controller usages!
     return {
       id: user.id,
       userId: user.id,

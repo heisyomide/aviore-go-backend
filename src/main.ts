@@ -40,13 +40,15 @@ async function bootstrap() {
       return callback(null, false);
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type', 
-      'Authorization', 
-      'Accept', 
-      'Cache-Control', 
-      'pragma'
-    ],
+allowedHeaders: [
+  'Content-Type', 
+  'Authorization', 
+  'Accept', 
+  'Cache-Control', 
+  'Pragma',
+  'X-Requested-With',
+  'Access-Control-Allow-Origin',
+],
     credentials: true,
   });
 

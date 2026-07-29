@@ -262,112 +262,82 @@ export class FlutterwaveService {
     }
   }
 
+  // flutterwave.service.ts
+async initiateTransfer(payload: {
+  account_bank: string;
+  account_number: string;
+  amount: number;
+  currency: string;
+  narration: string;
+  reference: string;
+}) {
+  try {
+    const response = await firstValueFrom(
+      this.http.post(
+        'https://api.flutterwave.com/v3/transfers',
+        payload,
+        { headers: this.headers },
+      ),
+    );
+    return response.data;
+  } catch (error: any) {
+    throw new BadRequestException(
+      error.response?.data?.message || 'Flutterwave transfer initiation failed',
+    );
+  }
+}
+
   /**
    * Initiate Bank Transfer / Payout (With Strict Balance Locking)
    */
-  async withdraw(dto: TransferDto) {
-    const flwReference = `WD-${Date.now()}`;
-
-    // 1. Atomically lock and deduct balance in database first
-    const { wallet, withdrawal } = await this.prisma.$transaction(async (tx) => {
-      const userWallet = await tx.wallet.findUnique({
-        where: { userId: dto.riderId },
-      });
-
-      if (!userWallet) {
-        throw new BadRequestException('Wallet not found');
-      }
-
-      if (Number(userWallet.availableBalance) < dto.amount) {
-        throw new BadRequestException('Insufficient wallet balance for withdrawal.');
-      }
-
-      // Deduct available balance and move to pending balance
-      const updatedWallet = await tx.wallet.update({
-        where: { id: userWallet.id },
-        data: {
-          availableBalance: { decrement: dto.amount },
-          pendingBalance: { increment: dto.amount },
-        },
-      });
-
-      const newWithdrawal = await tx.withdrawal.create({
-        data: {
-          walletId: userWallet.id,
-          riderId: dto.riderId,
-          amount: dto.amount,
-          bankName: dto.bankName,
-          bankCode: dto.accountBank,
-          accountNumber: dto.accountNumber,
-          accountName: dto.accountName,
-          flutterwaveReference: flwReference,
-          status: 'PENDING',
-        },
-      });
-
-      return { wallet: updatedWallet, withdrawal: newWithdrawal };
+async requestWithdrawal(userId: string, amount: number) {
+  return this.prisma.$transaction(async (tx) => {
+    const wallet = await tx.wallet.findUnique({
+      where: { userId },
+      include: { user: true },
     });
 
-    // 2. Call Flutterwave Transfer API
-    const payload = {
-      account_bank: dto.accountBank,
-      account_number: dto.accountNumber,
-      amount: dto.amount,
-      currency: 'NGN',
-      narration: dto.narration || 'Aviorè Go Payout',
-      reference: flwReference,
-      callback_url: dto.callbackUrl,
-      debit_currency: 'NGN',
-    };
-
-    try {
-      const response = await firstValueFrom(
-        this.http.post(
-          'https://api.flutterwave.com/v3/transfers',
-          payload,
-          { headers: this.headers },
-        ),
-      );
-
-      // Save Flutterwave transfer ID
-      await this.prisma.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: { flutterwaveId: String(response.data.data.id) },
-      });
-
-      this.notificationService
-        .dispatch({
-          type: NotificationType.WITHDRAWAL_UPDATE,
-          userId: dto.riderId,
-          title: 'Payout Processing',
-          body: `Your withdrawal of ₦${dto.amount} to ${dto.bankName} (${dto.accountNumber}) has been initiated via Flutterwave.`,
-          data: { withdrawalId: withdrawal.id },
-        })
-        .catch((err) => this.logger.error('[NOTIFICATION_ERROR]', err));
-
-      return response.data;
-    } catch (error: any) {
-      // 3. Rollback wallet funds if API call fails
-      await this.prisma.$transaction([
-        this.prisma.wallet.update({
-          where: { id: wallet.id },
-          data: {
-            availableBalance: { increment: dto.amount },
-            pendingBalance: { decrement: dto.amount },
-          },
-        }),
-        this.prisma.withdrawal.update({
-          where: { id: withdrawal.id },
-          data: { status: 'FAILED' },
-        }),
-      ]);
-
-      throw new InternalServerErrorException(
-        error.response?.data?.message ?? 'Withdrawal request failed',
-      );
+    if (!wallet) throw new NotFoundException('WALLET_NOT_FOUND');
+    if (Number(wallet.availableBalance) < amount) {
+      throw new BadRequestException('INSUFFICIENT_AVAILABLE_BALANCE');
     }
-  }
 
+    // Get Rider's bank details from RiderProfile
+    const riderProfile = await tx.riderProfile.findUnique({
+      where: { userId },
+    });
+
+    if (!riderProfile?.bankName || !riderProfile?.accountNumber || !riderProfile?.bankCode) {
+      throw new BadRequestException('BANK_DETAILS_NOT_CONFIGURED');
+    }
+
+    // Lock funds: Shift available balance to pending balance
+    await tx.wallet.update({
+      where: { id: wallet.id },
+      data: {
+        availableBalance: { decrement: amount },
+        pendingBalance: { increment: amount },
+      },
+    });
+
+    // Create withdrawal record in PENDING state
+    const withdrawal = await tx.withdrawal.create({
+      data: {
+        walletId: wallet.id,
+        riderId: riderProfile.id,
+        amount,
+        bankName: riderProfile.bankName,
+        bankCode: riderProfile.bankCode,
+        accountNumber: riderProfile.accountNumber,
+        accountName: riderProfile.accountName ?? `${wallet.user.firstName} ${wallet.user.lastName}`,
+        status: 'PENDING',
+        flutterwaveReference: `WD-${Date.now()}`,
+      },
+    });
+
+    return withdrawal;
+  });
+}
   /**
    * Fetch Nigerian Bank List
    */

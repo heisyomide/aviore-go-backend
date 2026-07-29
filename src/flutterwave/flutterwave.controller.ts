@@ -8,6 +8,7 @@ import {
   Param,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
 import { FlutterwaveService , } from './flutterwave.service';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
@@ -29,9 +30,11 @@ export class FlutterwaveController {
     return this.flutterwaveService.verifyPayment(transactionId);
   }
 
-  @Post('withdraw')
-  withdraw(@Body() dto: TransferDto) {
-    return this.flutterwaveService.withdraw(dto);
+@Post('withdraw')
+  withdraw(@Req() req: any, @Body() dto: TransferDto) {
+    // Extract userId from Auth Guard / User context
+    const userId = req.user?.id || dto.riderId;
+    return this.flutterwaveService.requestWithdrawal(userId, dto.amount);
   }
 
   @Get('banks')

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, BadRequestException, InternalServerErrorException, NotFoundException, UseGuards, Req } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { DashboardCacheService } from './dashboard-cache.service';
 import { RiderApplicationStatus,Prisma, IdentityStatus, ShipmentStatus, User } from '@prisma/client';
@@ -8,10 +8,20 @@ import { AdminFinanceService } from './finance.service';
 import { AdminReportsService } from './reports.service';
 import { NotificationService } from '../notification/notification.service'; // 👈 Import NotificationService
 import { NotificationType } from '../notification/dto/send-notification.dto';
+import { AdminBroadcastDto } from './dto/broadcast.dto';
+import { AdminBroadcastService } from './admin-broadcast.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { UserRole } from '@prisma/client';
+import { Roles } from '../auth/decorators/roles.decorator';
 
 @Controller('admin')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
 export class AdminController {
   constructor(
+    private readonly adminBroadcastService: AdminBroadcastService,
     private readonly operationsGateway: AdminOperationsGateway,
     private prisma: PrismaService,
     private cacheService: DashboardCacheService,
@@ -342,4 +352,12 @@ async evaluateRiderKYC(
       throw new InternalServerErrorException('Fatal failure during backend manifest ingestion workflow.');
     }
   }
+@Post('broadcast')
+  async sendBroadcast(
+    @GetUser() adminUser: any,
+    @Body() dto: AdminBroadcastDto,
+  ) {
+    return this.adminBroadcastService.sendBroadcast(dto, adminUser.id);
+  }
+
 }

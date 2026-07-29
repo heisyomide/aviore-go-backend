@@ -6,13 +6,15 @@ import { DashboardCacheService } from './dashboard-cache.service';
 import { AdminFinanceService } from './finance.service';
 import { AdminReportsService } from './reports.service';
 import { AdminOperationsGateway } from './operations.gateway';
-import { TrackingModule } from 'src/tracking/tracking.module'; // Import the module, not just the service
+import { AdminBroadcastService } from './admin-broadcast.service'; // Added
+import { TrackingModule } from 'src/tracking/tracking.module';
 import { NotificationModule } from 'src/notification/notification.module';
+import { FlutterwaveModule } from 'src/flutterwave/flutterwave.module';
 
 @Module({
   imports: [
     NotificationModule,
-    // forwardRef safeguards against circular loops between Admin and Tracking modules
+    FlutterwaveModule,
     forwardRef(() => TrackingModule),
   ],
   controllers: [AdminController],
@@ -23,14 +25,15 @@ import { NotificationModule } from 'src/notification/notification.module';
     AdminFinanceService,
     AdminReportsService,
     AdminOperationsGateway,
-    // Removed TrackingService from here; it is now supplied via TrackingModule imports
+    AdminBroadcastService, // Added
   ],
   exports: [
     AdminConfigService,
     DashboardCacheService,
     AdminFinanceService,
     AdminReportsService,
-    AdminOperationsGateway, // Exported so TrackingService can inject it safely
+    AdminOperationsGateway,
+    AdminBroadcastService, // Exported
   ],
 })
 export class AdminModule {}

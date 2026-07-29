@@ -8,31 +8,40 @@ dotenv.config();
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  private static pool: Pool;
+  // 1. Keep the pool instance instance-scoped instead of static
+  private pool: Pool;
   private readonly logger = new Logger(PrismaService.name);
 
   constructor() {
-    // 1. Create a native PostgreSQL connection pool with keep-alive & idle controls
+    const dbUrl = process.env.DATABASE_URL;
+
+    // 2. Configure SSL and TCP Keep-Alive parameters
     const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 10, // Maximum active client connections in pool
-      idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
-      connectionTimeoutMillis: 10000, // 10-second connection timeout
-      keepAlive: true, // Keep socket alive across cloud load balancers / Neon proxy
+      connectionString: dbUrl,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      // Force underlying socket keep-alive probes to prevent cloud firewall silent drops
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000, 
+      // Mandatory for Neon, Supabase, and AWS RDS SSL setups
+      ssl: dbUrl?.includes('sslmode=require') || dbUrl?.includes('neon.tech') 
+        ? { rejectUnauthorized: false } 
+        : undefined,
     });
 
-    // 2. IMPORTANT: Catch background pool errors to prevent Node.js process crash on drop
+    // 3. Catch idle connection drops gracefully
     pool.on('error', (err) => {
-      console.warn('⚠️ Idle PostgreSQL client error in pool (handled gracefully):', err.message);
+      this.logger.warn(`⚠️ Background PostgreSQL client drop: ${err.message}`);
     });
 
-    // 3. Wrap inside the Prisma Driver Adapter layer
+    // 4. Wrap inside Prisma Driver Adapter
     const adapter = new PrismaPg(pool);
 
-    // 4. Pass the adapter instance directly into the engine constructor
+    // 5. Pass adapter to Prisma Client
     super({ adapter });
 
-    PrismaService.pool = pool;
+    this.pool = pool;
   }
 
   async onModuleInit() {
@@ -41,8 +50,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleDestroy() {
     await this.$disconnect();
-    if (PrismaService.pool) {
-      await PrismaService.pool.end();
+    if (this.pool) {
+      await this.pool.end();
     }
   }
 }

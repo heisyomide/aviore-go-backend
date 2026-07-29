@@ -1,87 +1,84 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
-  NotFoundException,ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
-
-import { ShipmentStatus } from '@prisma/client';
 import { PrismaService } from '../providers/database/prisma.service';
 import { CompleteDeliveryDto } from './dto/complete-delivery.dto';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
 import { NotificationService } from 'src/notification/notification.service';
 import { NotificationType } from 'src/notification/dto/send-notification.dto';
+import { ShipmentStatus } from '@prisma/client';
 
-// ... inside your service class:
 @Injectable()
 export class RiderJobsService {
   constructor(
     private readonly realtimeService: RealtimeService,
     private readonly prisma: PrismaService,
     private readonly dispatchService: DispatchService,
-    private readonly notificationService: NotificationService, // 👈 Injected NotificationService
+    private readonly notificationService: NotificationService,
   ) {}
+
+  /**
+   * Helper: Get and validate active rider profile
+   */
+  private async getActiveRider(userId: string, requireOnline = false) {
+    const rider = await this.prisma.riderProfile.findUnique({
+      where: { userId },
+    });
+
+    if (!rider) {
+      throw new NotFoundException('Rider profile not found.');
+    }
+
+    if (requireOnline && !rider.isOnline) {
+      throw new ForbiddenException(
+        'You are currently offline. Please toggle your status to online.',
+      );
+    }
+
+    return rider;
+  }
 
   /**
    * Get all available jobs
    */
+  async getAvailableJobs(userId: string) {
+    await this.getActiveRider(userId, true);
 
+    const shipments = await this.prisma.shipment.findMany({
+      where: {
+        status: ShipmentStatus.PENDING,
+        riderId: null,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
 
-async getAvailableJobs(userId: string) {
-  // 1. Fetch the rider's profile to check availability state
-  const riderProfile = await this.prisma.riderProfile.findUnique({
-    where: { userId },
-  });
-
-  if (!riderProfile) {
-    throw new NotFoundException('Rider profile not found.');
+    return shipments.map((shipment) => ({
+      id: shipment.id,
+      trackingCode: shipment.trackingCode,
+      packageCategory: shipment.packageCategory,
+      deliveryType: shipment.deliveryType,
+      weightRange: shipment.weightRange,
+      pickupAddress: shipment.pickupAddress,
+      destinationAddress: shipment.destinationAddress,
+      distanceKm: shipment.distanceKm,
+      estimatedMinutes: shipment.estimatedMinutes,
+      payout: Number(shipment.riderShare),
+      isExpress: shipment.isExpress,
+      createdAt: shipment.createdAt,
+    }));
   }
-
-  // 🛡️ 2. Offline Guard: Block offline riders from viewing available jobs
-  if (!riderProfile.isOnline) {
-    throw new ForbiddenException(
-      'You are currently offline. Please toggle your status to online to view available jobs.',
-    );
-  }
-
-  // 3. Fetch pending shipments if the rider is online
-  const shipments = await this.prisma.shipment.findMany({
-    where: {
-      status: ShipmentStatus.PENDING,
-      riderId: null,
-    },
-    orderBy: {
-      createdAt: 'desc',
-    },
-    take: 20,
-  });
-
-  return shipments.map((shipment) => ({
-    id: shipment.id,
-    trackingCode: shipment.trackingCode,
-    packageCategory: shipment.packageCategory,
-    deliveryType: shipment.deliveryType,
-    weightRange: shipment.weightRange,
-    pickupAddress: shipment.pickupAddress,
-    destinationAddress: shipment.destinationAddress,
-    distanceKm: shipment.distanceKm,
-    estimatedMinutes: shipment.estimatedMinutes,
-    payout: Number(shipment.riderShare),
-    isExpress: shipment.isExpress,
-    createdAt: shipment.createdAt,
-  }));
-}
 
   /**
    * Get a single job
    */
   async getJobDetails(shipmentId: string, riderUserId: string) {
-    const rider = await this.prisma.riderProfile.findUnique({
-      where: { userId: riderUserId },
-    });
-
-    if (!rider) throw new NotFoundException('Rider profile not found.');
+    const rider = await this.getActiveRider(riderUserId);
 
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
@@ -138,73 +135,62 @@ async getAvailableJobs(userId: string) {
    * Rider Accepts Job
    */
   async acceptJob(shipmentId: string, riderUserId: string) {
-    const reserved = this.dispatchService.reserveShipment(
-      shipmentId,
-      riderUserId,
-    );
+    const reserved = this.dispatchService.reserveShipment(shipmentId, riderUserId);
 
     if (!reserved) {
-      throw new ConflictException(
-        'Another rider is already accepting this shipment.',
-      );
+      throw new ConflictException('Another rider is already accepting this shipment.');
     }
 
     try {
-      const rider = await this.prisma.riderProfile.findUnique({
-        where: { userId: riderUserId },
+      const rider = await this.getActiveRider(riderUserId, true);
+
+      const updatedShipment = await this.prisma.$transaction(async (tx) => {
+        const shipment = await tx.shipment.findUnique({
+          where: { id: shipmentId },
+        });
+
+        if (!shipment || shipment.status !== ShipmentStatus.PENDING || shipment.riderId) {
+          throw new ConflictException('This job is no longer available.');
+        }
+
+        const updated = await tx.shipment.update({
+          where: { id: shipmentId },
+          data: {
+            riderId: rider.id,
+            status: ShipmentStatus.ACCEPTED,
+          },
+        });
+
+        await tx.riderAssignment.create({
+          data: {
+            shipmentId: shipment.id,
+            riderId: rider.id,
+            status: 'ACCEPTED',
+          },
+        });
+
+        await tx.statusTimeline.create({
+          data: {
+            shipmentId: shipment.id,
+            status: ShipmentStatus.ACCEPTED,
+            changedBy: rider.userId,
+            description: 'Shipment accepted by rider.',
+          },
+        });
+
+        return updated;
       });
 
-      if (!rider) throw new NotFoundException('Rider profile not found.');
+      this.dispatchService.releaseReservation(shipmentId);
+      this.realtimeService.broadcastJobTaken(shipmentId, rider.userId);
 
-      const shipment = await this.prisma.shipment.findUnique({
-        where: { id: shipmentId },
-      });
-
-      if (!shipment) throw new NotFoundException('Shipment not found.');
-
-      if (
-        shipment.status !== ShipmentStatus.PENDING ||
-        shipment.riderId
-      ) {
-        throw new ConflictException('This job has already been accepted.');
-      }
-
-      const updatedShipment = await this.prisma.shipment.update({
-        where: { id: shipment.id },
-        data: {
-          riderId: rider.id,
-          status: ShipmentStatus.ACCEPTED,
-        },
-      });
-
-      await this.prisma.riderAssignment.create({
-        data: {
-          shipmentId: shipment.id,
-          riderId: rider.id,
-          status: 'ACCEPTED',
-        },
-      });
-
-      await this.prisma.statusTimeline.create({
-        data: {
-          shipmentId: shipment.id,
-          status: ShipmentStatus.ACCEPTED,
-          changedBy: rider.userId,
-          description: 'Shipment accepted by rider.',
-        },
-      });
-
-      this.dispatchService.releaseReservation(shipment.id);
-      this.realtimeService.broadcastJobTaken(shipment.id, rider.userId);
-
-      // 🔔 Notify Customer that a rider has accepted
       this.notificationService
         .dispatch({
           type: NotificationType.RIDER_ASSIGNED,
-          userId: shipment.customerId,
+          userId: updatedShipment.customerId,
           title: 'Rider Assigned',
-          body: `A dispatch rider has accepted your shipment (${shipment.trackingCode}).`,
-          data: { shipmentId: shipment.id, trackingCode: shipment.trackingCode },
+          body: `A dispatch rider has accepted your shipment (${updatedShipment.trackingCode}).`,
+          data: { shipmentId: updatedShipment.id, trackingCode: updatedShipment.trackingCode },
         })
         .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
@@ -222,42 +208,42 @@ async getAvailableJobs(userId: string) {
    * Arrive Pickup
    */
   async arrivePickup(shipmentId: string, riderUserId: string) {
-    const rider = await this.prisma.riderProfile.findUnique({
-      where: { userId: riderUserId },
+    const rider = await this.getActiveRider(riderUserId);
+
+    await this.prisma.$transaction(async (tx) => {
+      const shipment = await tx.shipment.findFirst({
+        where: { id: shipmentId, riderId: rider.id },
+      });
+
+      if (!shipment) throw new NotFoundException('Shipment not found.');
+      if (shipment.status !== ShipmentStatus.ACCEPTED) {
+        throw new BadRequestException('Shipment must be ACCEPTED before arriving at pickup.');
+      }
+
+      await tx.shipment.update({
+        where: { id: shipment.id },
+        data: { status: ShipmentStatus.PICKED_UP },
+      });
+
+      await tx.statusTimeline.create({
+        data: {
+          shipmentId: shipment.id,
+          status: ShipmentStatus.PICKED_UP,
+          changedBy: rider.userId,
+          description: 'Rider arrived at pickup location.',
+        },
+      });
+
+      this.notificationService
+        .dispatch({
+          type: NotificationType.ORDER_STATUS_UPDATE,
+          userId: shipment.customerId,
+          title: 'Rider at Pickup Location',
+          body: `Your rider has arrived at the pickup location for shipment ${shipment.trackingCode}.`,
+          data: { shipmentId: shipment.id },
+        })
+        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
     });
-
-    if (!rider) throw new NotFoundException('Rider not found.');
-
-    const shipment = await this.prisma.shipment.findFirst({
-      where: { id: shipmentId, riderId: rider.id },
-    });
-
-    if (!shipment) throw new NotFoundException('Shipment not found.');
-
-    await this.prisma.shipment.update({
-      where: { id: shipment.id },
-      data: { status: ShipmentStatus.PICKED_UP },
-    });
-
-    await this.prisma.statusTimeline.create({
-      data: {
-        shipmentId: shipment.id,
-        status: ShipmentStatus.PICKED_UP,
-        changedBy: rider.userId,
-        description: 'Rider arrived at pickup location.',
-      },
-    });
-
-    // 🔔 Notify Customer
-    this.notificationService
-      .dispatch({
-        type: NotificationType.ORDER_STATUS_UPDATE,
-        userId: shipment.customerId,
-        title: 'Rider at Pickup Location',
-        body: `Your rider has arrived at the pickup location for shipment ${shipment.trackingCode}.`,
-        data: { shipmentId: shipment.id },
-      })
-      .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
     return { message: 'Arrival confirmed.' };
   }
@@ -266,42 +252,42 @@ async getAvailableJobs(userId: string) {
    * Pickup Package
    */
   async pickupPackage(shipmentId: string, riderUserId: string) {
-    const rider = await this.prisma.riderProfile.findUnique({
-      where: { userId: riderUserId },
+    const rider = await this.getActiveRider(riderUserId);
+
+    await this.prisma.$transaction(async (tx) => {
+      const shipment = await tx.shipment.findFirst({
+        where: { id: shipmentId, riderId: rider.id },
+      });
+
+      if (!shipment) throw new NotFoundException('Shipment not found.');
+      if (shipment.status !== ShipmentStatus.PICKED_UP) {
+        throw new BadRequestException('Rider must arrive at pickup before starting transit.');
+      }
+
+      await tx.shipment.update({
+        where: { id: shipment.id },
+        data: { status: ShipmentStatus.IN_TRANSIT },
+      });
+
+      await tx.statusTimeline.create({
+        data: {
+          shipmentId: shipment.id,
+          status: ShipmentStatus.IN_TRANSIT,
+          changedBy: rider.userId,
+          description: 'Package picked up.',
+        },
+      });
+
+      this.notificationService
+        .dispatch({
+          type: NotificationType.ORDER_STATUS_UPDATE,
+          userId: shipment.customerId,
+          title: 'Package In Transit',
+          body: `Your package (${shipment.trackingCode}) has been picked up and is now on the way!`,
+          data: { shipmentId: shipment.id },
+        })
+        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
     });
-
-    if (!rider) throw new NotFoundException('Rider not found.');
-
-    const shipment = await this.prisma.shipment.findFirst({
-      where: { id: shipmentId, riderId: rider.id },
-    });
-
-    if (!shipment) throw new NotFoundException('Shipment not found.');
-
-    await this.prisma.shipment.update({
-      where: { id: shipment.id },
-      data: { status: ShipmentStatus.IN_TRANSIT },
-    });
-
-    await this.prisma.statusTimeline.create({
-      data: {
-        shipmentId: shipment.id,
-        status: ShipmentStatus.IN_TRANSIT,
-        changedBy: rider.userId,
-        description: 'Package picked up.',
-      },
-    });
-
-    // 🔔 Notify Customer
-    this.notificationService
-      .dispatch({
-        type: NotificationType.ORDER_STATUS_UPDATE,
-        userId: shipment.customerId,
-        title: 'Package In Transit',
-        body: `Your package (${shipment.trackingCode}) has been picked up and is now on the way!`,
-        data: { shipmentId: shipment.id },
-      })
-      .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
     return { message: 'Package is now in transit.' };
   }
@@ -310,42 +296,42 @@ async getAvailableJobs(userId: string) {
    * Arrive Destination
    */
   async arriveDestination(shipmentId: string, riderUserId: string) {
-    const rider = await this.prisma.riderProfile.findUnique({
-      where: { userId: riderUserId },
+    const rider = await this.getActiveRider(riderUserId);
+
+    await this.prisma.$transaction(async (tx) => {
+      const shipment = await tx.shipment.findFirst({
+        where: { id: shipmentId, riderId: rider.id },
+      });
+
+      if (!shipment) throw new NotFoundException('Shipment not found.');
+      if (shipment.status !== ShipmentStatus.IN_TRANSIT) {
+        throw new BadRequestException('Shipment must be IN_TRANSIT before reaching destination.');
+      }
+
+      await tx.shipment.update({
+        where: { id: shipment.id },
+        data: { status: ShipmentStatus.OUT_FOR_DELIVERY },
+      });
+
+      await tx.statusTimeline.create({
+        data: {
+          shipmentId: shipment.id,
+          status: ShipmentStatus.OUT_FOR_DELIVERY,
+          changedBy: rider.userId,
+          description: 'Rider arrived at destination.',
+        },
+      });
+
+      this.notificationService
+        .dispatch({
+          type: NotificationType.ORDER_STATUS_UPDATE,
+          userId: shipment.customerId,
+          title: 'Arrived at Destination',
+          body: `Your rider has arrived at the destination for shipment ${shipment.trackingCode}. Please prepare your PIN.`,
+          data: { shipmentId: shipment.id },
+        })
+        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
     });
-
-    if (!rider) throw new NotFoundException('Rider not found.');
-
-    const shipment = await this.prisma.shipment.findFirst({
-      where: { id: shipmentId, riderId: rider.id },
-    });
-
-    if (!shipment) throw new NotFoundException('Shipment not found.');
-
-    await this.prisma.shipment.update({
-      where: { id: shipment.id },
-      data: { status: ShipmentStatus.OUT_FOR_DELIVERY },
-    });
-
-    await this.prisma.statusTimeline.create({
-      data: {
-        shipmentId: shipment.id,
-        status: ShipmentStatus.OUT_FOR_DELIVERY,
-        changedBy: rider.userId,
-        description: 'Rider arrived at destination.',
-      },
-    });
-
-    // 🔔 Notify Customer
-    this.notificationService
-      .dispatch({
-        type: NotificationType.ORDER_STATUS_UPDATE,
-        userId: shipment.customerId,
-        title: 'Arrived at Destination',
-        body: `Your rider has arrived at the destination for shipment ${shipment.trackingCode}. Please prepare your PIN.`,
-        data: { shipmentId: shipment.id },
-      })
-      .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
     return { message: 'Arrived at destination.' };
   }
@@ -358,11 +344,7 @@ async getAvailableJobs(userId: string) {
     riderUserId: string,
     dto: CompleteDeliveryDto,
   ) {
-    const rider = await this.prisma.riderProfile.findUnique({
-      where: { userId: riderUserId },
-    });
-
-    if (!rider) throw new NotFoundException('Rider profile not found.');
+    const rider = await this.getActiveRider(riderUserId);
 
     const shipment = await this.prisma.shipment.findFirst({
       where: { id: shipmentId, riderId: rider.id },
@@ -376,6 +358,10 @@ async getAvailableJobs(userId: string) {
 
     if (shipment.status === ShipmentStatus.DELIVERED) {
       throw new ConflictException('Shipment already delivered.');
+    }
+
+    if (shipment.status !== ShipmentStatus.OUT_FOR_DELIVERY) {
+      throw new BadRequestException('Shipment must be OUT_FOR_DELIVERY before completing.');
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -415,7 +401,7 @@ async getAvailableJobs(userId: string) {
           type: 'CREDIT',
           category: 'RIDER_EARNINGS',
           description: `Delivery earnings (${shipment.trackingCode})`,
-          referenceCode: `DELIVERY-${Date.now()}`,
+          referenceCode: `DELIVERY-${shipment.trackingCode}-${Date.now()}`,
         },
       });
 
@@ -429,7 +415,7 @@ async getAvailableJobs(userId: string) {
       });
     });
 
-    // 🔔 Dispatch Notification to Customer via NotificationService
+    // Send notifications after transaction succeeds
     this.notificationService
       .dispatch({
         type: NotificationType.ORDER_STATUS_UPDATE,
@@ -440,7 +426,6 @@ async getAvailableJobs(userId: string) {
       })
       .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
 
-    // 🔔 Dispatch Notification to Rider via NotificationService
     this.notificationService
       .dispatch({
         type: NotificationType.PAYMENT_RECEIPT,

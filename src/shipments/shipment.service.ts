@@ -5,7 +5,7 @@ import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { PricingService } from '../pricing/pricing.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
 import { PaymentsService } from '../payments/payments.service';
-import { NavigationService } from './navigation.service'; // 👈 Injected NavigationService
+import { NavigationService } from './navigation.service';
 
 @Injectable()
 export class ShipmentsService {
@@ -14,7 +14,7 @@ export class ShipmentsService {
     private PricingService: PricingService,
     private readonly dispatchService: DispatchService,
     private readonly paymentsService: PaymentsService,
-    private readonly navigationService: NavigationService, // 👈 Injected NavigationService
+    private readonly navigationService: NavigationService,
   ) {}
 
   private async generateTrackingCode(): Promise<string> {
@@ -35,98 +35,210 @@ export class ShipmentsService {
     return code;
   }
 
-async createShipment(customerId: string, dto: CreateShipmentDto) {
-  if (!customerId) {
-    throw new Error('customerId parameter is required');
+  async createShipment(customerId: string, dto: CreateShipmentDto) {
+    if (!customerId) {
+      throw new Error('customerId parameter is required');
+    }
+
+    const trackingCode = await this.generateTrackingCode();
+
+    const pricingResult = this.PricingService.calculate({
+      pickupLat: dto.pickupLat,
+      pickupLng: dto.pickupLng,
+      destinationLat: dto.destinationLat,
+      destinationLng: dto.destinationLng,
+      packageCategory: dto.packageCategory,
+      weightRange: dto.weightRange,
+      isExpress: dto.isExpress || false,
+      waterproof: dto.waterproof || false,
+    });
+
+    const totalPayable = pricingResult.totalDeliveryFee;
+    const platformShare = totalPayable * 0.2;
+    const riderShare = totalPayable * 0.8;
+
+    const shipmentData = {
+      trackingCode,
+      status: ShipmentStatus.AWAITING_PAYMENT, // 👈 1. Unpaid state
+      paymentStatus: PaymentStatus.PENDING,
+      deliveryType: dto.deliveryType,
+      packageCategory: dto.packageCategory,
+      weightRange: dto.weightRange,
+      description: dto.description || '',
+
+      pickupAddress: dto.pickupAddress,
+      pickupLandmark: dto.pickupLandmark || null,
+      pickupLat: dto.pickupLat,
+      pickupLng: dto.pickupLng,
+      pickupPlaceId: dto.pickupPlaceId || null,
+      senderName: dto.senderName,
+      senderPhone: dto.senderPhone,
+
+      destinationAddress: dto.destinationAddress,
+      destinationLandmark: dto.destinationLandmark || null,
+      destinationLat: dto.destinationLat,
+      destinationLng: dto.destinationLng,
+      destinationPlaceId: dto.destinationPlaceId || null,
+      recipient: dto.receiverName,
+      recipientPhone: dto.receiverPhone,
+
+      regionType: pricingResult.detectedRegion,
+
+      isFragile: dto.isFragile || false,
+      keepUpright: dto.keepUpright || false,
+      handleWithCare: dto.handleWithCare || false,
+      waterproof: dto.waterproof || false,
+      isExpress: dto.isExpress || false,
+
+      isSmartDelivery: dto.deliveryMethod === 'smart',
+      specialNotes: dto.deliveryNote || '',
+      verificationPin: dto.verificationPin,
+
+      baseFee: new Prisma.Decimal(pricingResult.breakdown.baseFee),
+      pickupDistFee: new Prisma.Decimal(pricingResult.breakdown.pickupDistanceFee),
+      deliveryDistFee: new Prisma.Decimal(pricingResult.breakdown.deliveryDistanceFee),
+      extraCharges: new Prisma.Decimal(pricingResult.breakdown.extraCharges),
+      totalPrice: new Prisma.Decimal(totalPayable),
+      riderShare: new Prisma.Decimal(riderShare),
+      platformShare: new Prisma.Decimal(platformShare),
+
+      distanceKm: pricingResult.distanceKm,
+      estimatedMinutes: pricingResult.estimatedMinutes,
+
+      customer: {
+        connect: {
+          id: customerId,
+        },
+      },
+
+      timelineEvents: {
+        create: {
+          status: ShipmentStatus.AWAITING_PAYMENT,
+          description: `Shipment created. Waiting for payment confirmation. Zone: ${pricingResult.detectedRegion}`,
+          changedBy: 'CUSTOMER',
+        },
+      },
+    };
+
+    const shipment = await this.prisma.shipment.create({
+      data: shipmentData,
+    });
+
+    return shipment;
   }
 
-  const trackingCode = await this.generateTrackingCode();
+  async getCustomerStats(customerId: string) {
+    if (!customerId) return { active: 0, inTransit: 0, delivered: 0 };
 
-  const pricingResult = this.PricingService.calculate({
-    pickupLat: dto.pickupLat,
-    pickupLng: dto.pickupLng,
-    destinationLat: dto.destinationLat,
-    destinationLng: dto.destinationLng,
-    packageCategory: dto.packageCategory,
-    weightRange: dto.weightRange,
-    isExpress: dto.isExpress || false,
-    waterproof: dto.waterproof || false,
-  });
+    const statusCounts = await this.prisma.shipment.groupBy({
+      by: ['status'],
+      where: { customerId },
+      _count: { id: true },
+    });
 
-  const totalPayable = pricingResult.totalDeliveryFee;
-  const platformShare = totalPayable * 0.2;
-  const riderShare = totalPayable * 0.8;
+    let active = 0;
+    let inTransit = 0;
+    let delivered = 0;
 
-  const shipmentData = {
-    trackingCode,
-    status: ShipmentStatus.AWAITING_PAYMENT, // 👈 1. Set to AWAITING_PAYMENT so riders cannot see it
-    paymentStatus: PaymentStatus.PENDING,
-    deliveryType: dto.deliveryType,
-    packageCategory: dto.packageCategory,
-    weightRange: dto.weightRange,
-    description: dto.description || '',
+    statusCounts.forEach((item) => {
+      switch (item.status) {
+        case ShipmentStatus.PENDING:
+        case ShipmentStatus.ACCEPTED:
+        case ShipmentStatus.PICKED_UP:
+          active += item._count.id; // 👈 NOW AWAITING_PAYMENT is excluded!
+          break;
+        case ShipmentStatus.IN_TRANSIT:
+        case ShipmentStatus.ARRIVED_AT_HUB:
+        case ShipmentStatus.OUT_FOR_DELIVERY:
+          inTransit += item._count.id;
+          break;
+        case ShipmentStatus.DELIVERED:
+          delivered += item._count.id;
+          break;
+        default:
+          // AWAITING_PAYMENT, CANCELLED, RETURNED, etc. drop into default and are NOT counted as active
+          break;
+      }
+    });
 
-    pickupAddress: dto.pickupAddress,
-    pickupLandmark: dto.pickupLandmark || null,
-    pickupLat: dto.pickupLat,
-    pickupLng: dto.pickupLng,
-    pickupPlaceId: dto.pickupPlaceId || null,
-    senderName: dto.senderName,
-    senderPhone: dto.senderPhone,
+    return { active, inTransit, delivered };
+  }
 
-    destinationAddress: dto.destinationAddress,
-    destinationLandmark: dto.destinationLandmark || null,
-    destinationLat: dto.destinationLat,
-    destinationLng: dto.destinationLng,
-    destinationPlaceId: dto.destinationPlaceId || null,
-    recipient: dto.receiverName,
-    recipientPhone: dto.receiverPhone,
+  async getCustomerShipments(customerId: string) {
+    if (!customerId) return [];
 
-    regionType: pricingResult.detectedRegion,
-
-    isFragile: dto.isFragile || false,
-    keepUpright: dto.keepUpright || false,
-    handleWithCare: dto.handleWithCare || false,
-    waterproof: dto.waterproof || false,
-    isExpress: dto.isExpress || false,
-
-    isSmartDelivery: dto.deliveryMethod === 'smart',
-    specialNotes: dto.deliveryNote || '',
-    verificationPin: dto.verificationPin,
-
-    baseFee: new Prisma.Decimal(pricingResult.breakdown.baseFee),
-    pickupDistFee: new Prisma.Decimal(pricingResult.breakdown.pickupDistanceFee),
-    deliveryDistFee: new Prisma.Decimal(pricingResult.breakdown.deliveryDistanceFee),
-    extraCharges: new Prisma.Decimal(pricingResult.breakdown.extraCharges),
-    totalPrice: new Prisma.Decimal(totalPayable),
-    riderShare: new Prisma.Decimal(riderShare),
-    platformShare: new Prisma.Decimal(platformShare),
-
-    distanceKm: pricingResult.distanceKm,
-    estimatedMinutes: pricingResult.estimatedMinutes,
-
-    customer: {
-      connect: {
-        id: customerId,
+    return this.prisma.shipment.findMany({
+      where: { 
+        customerId,
+        // Exclude unpaid draft shipments from main history view
+        status: {
+          notIn: [ShipmentStatus.AWAITING_PAYMENT, ShipmentStatus.CANCELLED],
+        },
       },
-    },
-
-    timelineEvents: {
-      create: {
-        status: ShipmentStatus.AWAITING_PAYMENT, // 👈 2. Match timeline status to initial shipment status
-        description: `Shipment created. Waiting for payment confirmation. Zone: ${pricingResult.detectedRegion}`,
-        changedBy: 'CUSTOMER',
+      include: {
+        timelineEvents: {
+          orderBy: { createdAt: 'asc' },
+        },
+        rider: true,
       },
-    },
-  };
+      orderBy: { createdAt: 'desc' },
+    });
+  }
 
-  const shipment = await this.prisma.shipment.create({
-    data: shipmentData,
-  });
+  async getRecentCustomerShipments(customerId: string) {
+    if (!customerId) return [];
 
-  // Shipment will be dispatched ONLY when Flutterwave confirms payment!
-  return shipment;
-}
+    const rawShipments = await this.prisma.shipment.findMany({
+      where: { 
+        customerId,
+        // Filter out AWAITING_PAYMENT so unpaid test orders don't show on dashboard
+        status: {
+          notIn: [ShipmentStatus.AWAITING_PAYMENT],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    return rawShipments.map((shipment) => {
+      let displayStatus: 'Active' | 'In Transit' | 'Delivered' = 'Active';
+
+      switch (shipment.status) {
+        case ShipmentStatus.IN_TRANSIT:
+        case ShipmentStatus.ARRIVED_AT_HUB:
+        case ShipmentStatus.OUT_FOR_DELIVERY:
+          displayStatus = 'In Transit';
+          break;
+        case ShipmentStatus.DELIVERED:
+          displayStatus = 'Delivered';
+          break;
+        case ShipmentStatus.PENDING:
+        case ShipmentStatus.ACCEPTED:
+        case ShipmentStatus.PICKED_UP:
+          displayStatus = 'Active';
+          break;
+        default:
+          displayStatus = 'Active';
+          break;
+      }
+
+      return {
+        id: shipment.trackingCode,
+        recipient: shipment.recipient || shipment.destinationAddress.split(',')[0],
+        destination: shipment.destinationAddress,
+        status: displayStatus,
+        date: shipment.createdAt.toISOString().split('T')[0],
+      };
+    });
+  }
+
+  async getCustomerDashboard(customerId: string) {
+    const stats = await this.getCustomerStats(customerId);
+    const shipments = await this.getRecentCustomerShipments(customerId);
+
+    return { stats, shipments };
+  }
+
   /**
    * Get Voice Navigation Turn Steps for Rider PWA Map
    */
@@ -196,100 +308,6 @@ async createShipment(customerId: string, dto: CreateShipmentDto) {
       shipment: updatedShipment,
       payout: escrowResult,
     };
-  }
-
-  async getCustomerStats(customerId: string) {
-    if (!customerId) return { active: 0, inTransit: 0, delivered: 0 };
-
-    const statusCounts = await this.prisma.shipment.groupBy({
-      by: ['status'],
-      where: { customerId },
-      _count: { id: true },
-    });
-
-    let active = 0;
-    let inTransit = 0;
-    let delivered = 0;
-
-    statusCounts.forEach((item) => {
-      switch (item.status) {
-        case ShipmentStatus.PENDING:
-        case ShipmentStatus.ACCEPTED:
-        case ShipmentStatus.PICKED_UP:
-          active += item._count.id;
-          break;
-        case ShipmentStatus.IN_TRANSIT:
-        case ShipmentStatus.ARRIVED_AT_HUB:
-        case ShipmentStatus.OUT_FOR_DELIVERY:
-          inTransit += item._count.id;
-          break;
-        case ShipmentStatus.DELIVERED:
-          delivered += item._count.id;
-          break;
-        default:
-          break;
-      }
-    });
-
-    return { active, inTransit, delivered };
-  }
-
-  async getCustomerShipments(customerId: string) {
-    if (!customerId) return [];
-
-    return this.prisma.shipment.findMany({
-      where: { customerId },
-      include: {
-        timelineEvents: {
-          orderBy: { createdAt: 'asc' },
-        },
-        rider: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
-  async getRecentCustomerShipments(customerId: string) {
-    if (!customerId) return [];
-
-    const rawShipments = await this.prisma.shipment.findMany({
-      where: { customerId },
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-    });
-
-    return rawShipments.map((shipment) => {
-      let displayStatus: 'Active' | 'In Transit' | 'Delivered' = 'Active';
-
-      switch (shipment.status) {
-        case ShipmentStatus.IN_TRANSIT:
-        case ShipmentStatus.ARRIVED_AT_HUB:
-        case ShipmentStatus.OUT_FOR_DELIVERY:
-          displayStatus = 'In Transit';
-          break;
-        case ShipmentStatus.DELIVERED:
-          displayStatus = 'Delivered';
-          break;
-        default:
-          displayStatus = 'Active';
-          break;
-      }
-
-      return {
-        id: shipment.trackingCode,
-        recipient: shipment.recipient || shipment.destinationAddress.split(',')[0],
-        destination: shipment.destinationAddress,
-        status: displayStatus,
-        date: shipment.createdAt.toISOString().split('T')[0],
-      };
-    });
-  }
-
-  async getCustomerDashboard(customerId: string) {
-    const stats = await this.getCustomerStats(customerId);
-    const shipments = await this.getRecentCustomerShipments(customerId);
-
-    return { stats, shipments };
   }
 
   async updateLiveLocation(shipmentId: string, latitude: number, longitude: number) {

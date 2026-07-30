@@ -12,10 +12,10 @@ export class ResendService {
 
   async sendPriorityEmail(to: string, subject: string, html: string) {
     try {
-      // Uses RESEND_FROM_EMAIL if set, otherwise falls back to Resend's default test sender
+      // Fallback explicitly to the verified domain if environment variable is missing/invalid
       const fromEmail =
         this.config.get<string>('RESEND_FROM_EMAIL') ||
-        'Aviorè Security <onboarding@resend.dev>';
+        'Aviorè Security <no-reply@aviorego.com.ng>';
 
       const res = await this.resend.emails.send({
         from: fromEmail,

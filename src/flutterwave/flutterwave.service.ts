@@ -357,26 +357,33 @@ async requestWithdrawal(userId: string, amount: number) {
   /**
    * Resolve Bank Account Name
    */
-  async resolveAccount(bankCode: string, accountNumber: string) {
-    try {
-      const response = await firstValueFrom(
-        this.http.post(
-          'https://api.flutterwave.com/v3/accounts/resolve',
-          {
-            account_number: accountNumber,
-            account_bank: bankCode,
-          },
-          { headers: this.headers },
-        ),
-      );
-      return response.data;
-    } catch (error: any) {
-      throw new BadRequestException(
-        error.response?.data?.message ?? 'Account resolution failed',
-      );
-    }
-  }
+ async resolveAccount(bankCode: string, accountNumber: string) {
+  try {
+    const response = await firstValueFrom(
+      this.http.post(
+        'https://api.flutterwave.com/v3/accounts/resolve',
+        {
+          account_number: accountNumber,
+          account_bank: bankCode,
+        },
+        { headers: this.headers },
+      ),
+    );
+    
+    // Flutterwave response structure: { status: 'success', message: 'Account resolved', data: { account_name: '...', account_number: '...' } }
+    return response.data;
+  } catch (error: any) {
+    // 🔍 Print the exact Flutterwave error body in your terminal
+    console.error('Flutterwave Account Resolve Error:', error.response?.data || error.message);
 
+    const errorMessage =
+      error.response?.data?.message ||
+      error.response?.data?.error ||
+      'Invalid bank account or bank code.';
+
+    throw new BadRequestException(errorMessage);
+  }
+}
   /**
    * Handle Webhook Events from Flutterwave
    */

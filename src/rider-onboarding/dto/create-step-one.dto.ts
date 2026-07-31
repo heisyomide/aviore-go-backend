@@ -3,11 +3,8 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  MinLength,
   Matches,
-  IsStrongPassword,
 } from 'class-validator';
-import { MatchPassword } from '../validators/password-strength.validator';
 
 export class CreateStep1Dto {
   @IsString()
@@ -23,25 +20,45 @@ export class CreateStep1Dto {
   lastName!: string;
 
   @IsString()
-  @Matches(/^[0-9]{11}$/)
+  @Matches(/^\+?[0-9]{10,15}$/, {
+    message: 'Phone number must be valid digits without spaces or dashes (e.g. +2348012345678 or 08012345678)',
+  })
   phoneNumber!: string;
 
   @IsEmail()
   email!: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  address!: string;
+  residentialAddress?: string;
 
+  @IsOptional()
   @IsString()
-  @IsStrongPassword()
-  @MinLength(8)
-  password!: string;
+  address?: string;
 
+  @IsOptional()
   @IsString()
-  @MatchPassword('password')
-  @MinLength(8)
-  confirmPassword!: string;
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  localGovernment?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactName?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyRelationship?: string;
 
   @IsOptional()
   @IsString()

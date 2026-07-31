@@ -21,8 +21,8 @@ export class RiderDashboardController {
 
 @Get('overview')
 getOverview(@Req() req: any) {
-  return this.riderDashboardService.getOverview(
-    req.user.userId,
-  );
+  // Support both req.user.userId and req.user.id or sub from JWT Payload
+  const userId = req.user?.userId || req.user?.id || req.user?.sub;
+  return this.riderDashboardService.getOverview(userId);
 }
 }

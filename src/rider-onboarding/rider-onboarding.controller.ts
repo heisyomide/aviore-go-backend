@@ -115,11 +115,14 @@ startApplication(@Req() req) {
   /**
    * Final validation compilation check and review state submission seal.
    */
-  @UseGuards(JwtAuthGuard)
-  @Post('submit/:applicationId')
-  submit(@Param('applicationId') applicationId: string, @Req() req) {
-    // 👈 Extract user ID from JWT payload
-    const userId = req.user.id || req.user.sub;
-    return this.onboardingService.submitApplication(applicationId, userId);
-  }
+@UseGuards(JwtAuthGuard)
+@Post('submit/:applicationId')
+submit(
+  @Param('applicationId') applicationId: string,
+  @Req() req,
+  @Body() dto: any,
+) {
+  const userId = req.user.id || req.user.sub;
+  return this.onboardingService.submitApplication(applicationId, userId, dto);
+}
 }

@@ -96,13 +96,10 @@ model RiderProfile {
 
 model RiderApplication {
   id                    String                 @id @default(uuid())
-  userId                String?                // Keep optional
+  userId                String?                @unique
   currentStep           Int                    @default(1)
   status                RiderApplicationStatus @default(DRAFT)
 
-  /**
-   * STEP 1 (Added required basic account capture fields)
-   */
   firstName             String?
   lastName              String?
   email                 String?
@@ -110,9 +107,6 @@ model RiderApplication {
   middleName            String?
   referralCode          String?
 
-  /**
-   * STEP 2
-   */
   dateOfBirth           DateTime?
   gender                Gender?
   residentialAddress    String?
@@ -123,18 +117,12 @@ model RiderApplication {
   emergencyContactPhone String?
   emergencyRelationship String?
 
-  /**
-   * STEP 3
-   */
   idType                IdType?
   idNumber              String?
   idFrontUrl            String?
   idBackUrl             String?
   selfieUrl             String?
 
-  /**
-   * STEP 4
-   */
   vehicleType           VehicleType?
   plateNumber           String?
   vehicleBrand          String?
@@ -143,37 +131,27 @@ model RiderApplication {
   vehicleYear           Int?
   vehiclePhotoUrl       String?
 
-  /**
-   * STEP 5
-   */
   driversLicenseUrl     String?
   vehiclePaperUrl       String?
   insuranceUrl          String?
   roadWorthinessUrl     String?
   profilePhotoUrl       String?
 
-  /**
-   * STEP 6
-   */
   bankName              String?
   bankCode              String?
   accountNumber         String?
   accountName           String?
 
-  /**
-   * Agreements
-   */
-  acceptedTerms          Boolean                @default(false)
-  acceptedCommission     Boolean                @default(false)
-  acceptedDeliveryPolicy Boolean                @default(false)
+  acceptedTerms         Boolean                @default(false)
+  acceptedCommission    Boolean                @default(false)
+  acceptedDeliveryPolicy Boolean               @default(false)
 
-  submittedAt            DateTime?
-  reviewedAt             DateTime?
-  reviewedBy             String?
-  rejectionReason        String?
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
-
+  submittedAt           DateTime?
+  reviewedAt            DateTime?
+  reviewedBy            String?
+  rejectionReason       String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 }
 enum RiderApplicationStatus {
   DRAFT

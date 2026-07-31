@@ -206,142 +206,195 @@ export class RiderOnboardingService {
   /**
    * Submits application, evaluates data completeness and filters against external duplicates.
    */
-  async submitApplication(applicationId: string, userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+ async submitApplication(applicationId: string, userId: string, dto?: any) {
+  const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
-    if (!user) {
-      throw new UnauthorizedException('User account not found.');
-    }
+  if (!user) {
+    throw new UnauthorizedException('User account not found.');
+  }
 
-    if (user.status === IdentityStatus.PENDING_VERIFICATION) {
-      throw new ForbiddenException(
-        'Email address must be confirmed before submitting rider onboarding documentation.',
-      );
-    }
+  if (user.status === IdentityStatus.PENDING_VERIFICATION) {
+    throw new ForbiddenException(
+      'Email address must be confirmed before submitting rider onboarding documentation.',
+    );
+  }
 
-    const application = await this.getApplication(applicationId);
+  // 🟢 0. IF PAYLOAD IS SENT, FIRST UPDATE THE DRAFT APPLICATION
+  if (dto && Object.keys(dto).length > 0) {
+    const parsedDob = dto.dateOfBirth ? new Date(dto.dateOfBirth) : undefined;
+    const vehicleYearInt = dto.vehicleYear ? parseInt(dto.vehicleYear, 10) : undefined;
 
-    // 1. Validation - Agreements
-    if (
-      !application.acceptedTerms ||
-      !application.acceptedCommission ||
-      !application.acceptedDeliveryPolicy
-    ) {
-      throw new BadRequestException(
-        'You must accept all agreements before submitting.',
-      );
-    }
-
-    // 2. Validation - Identity
-    if (
-      !application.idFrontUrl ||
-      !application.idBackUrl ||
-      !application.selfieUrl ||
-      !application.idNumber ||
-      !application.email ||
-      !application.phoneNumber
-    ) {
-      throw new BadRequestException('Identity verification fields are incomplete.');
-    }
-
-    // 3. Validation - Vehicle
-    if (
-      !application.vehicleType ||
-      !application.plateNumber ||
-      !application.vehicleBrand ||
-      !application.vehicleModel
-    ) {
-      throw new BadRequestException('Vehicle information is incomplete.');
-    }
-
-    // 4. Validation - Banking
-    if (
-      !application.bankName ||
-      !application.accountNumber ||
-      !application.accountName
-    ) {
-      throw new BadRequestException('Bank information is incomplete.');
-    }
-
-    // 5. Check if already submitted
-    if (
-      application.status === RiderApplicationStatus.SUBMITTED ||
-      application.status === RiderApplicationStatus.UNDER_REVIEW
-    ) {
-      throw new ConflictException('Application has already been submitted.');
-    }
-
-    // 6. System Uniqueness Checks
-    if (application.email) {
-      const emailConflict = await this.prisma.user.findFirst({
-        where: {
-          email: application.email,
-          id: { not: userId },
-        },
-      });
-      if (emailConflict) {
-        throw new ConflictException('An account with this email address already belongs to another user.');
-      }
-    }
-
-    if (application.phoneNumber) {
-      const phoneConflict = await this.prisma.user.findFirst({
-        where: {
-          phoneNumber: application.phoneNumber,
-          id: { not: userId },
-        },
-      });
-      if (phoneConflict) {
-        throw new ConflictException('An account with this phone number already belongs to another user.');
-      }
-    }
-
-    if (application.plateNumber) {
-      const plateConflict = await this.prisma.riderApplication.findFirst({
-        where: {
-          plateNumber: application.plateNumber,
-          status: {
-            in: [
-              RiderApplicationStatus.SUBMITTED,
-              RiderApplicationStatus.UNDER_REVIEW,
-            ],
-          },
-          id: { not: applicationId },
-        },
-      });
-      if (plateConflict) {
-        throw new ConflictException(
-          'This vehicle plate number is already attached to an open processing application.',
-        );
-      }
-    }
-
-    // 🟢 7. FINAL SYNC TO USER & RIDER PROFILE TABLES
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        firstName: application.firstName || user.firstName,
-        lastName: application.lastName || user.lastName,
-        phoneNumber: application.phoneNumber || user.phoneNumber,
-        avatarUrl: application.profilePhotoUrl || user.avatarUrl,
-      },
-    });
-
-    // 8. Seal Application State
-    const updated = await this.prisma.riderApplication.update({
+    await this.prisma.riderApplication.update({
       where: { id: applicationId },
       data: {
-        status: RiderApplicationStatus.SUBMITTED,
-        submittedAt: new Date(),
-        currentStep: 7,
+        firstName: dto.firstName ?? undefined,
+        lastName: dto.lastName ?? undefined,
+        middleName: dto.middleName ?? undefined,
+        phoneNumber: dto.phoneNumber ?? undefined,
+        email: dto.email ?? undefined,
+        dateOfBirth: parsedDob,
+        gender: dto.gender ?? undefined,
+        residentialAddress: dto.residentialAddress ?? undefined,
+        state: dto.state ?? undefined,
+        city: dto.city ?? undefined,
+        localGovernment: dto.lga || dto.localGovernment || undefined,
+        emergencyContactName: dto.emergencyContactName ?? undefined,
+        emergencyContactPhone: dto.emergencyContactPhone ?? undefined,
+        emergencyRelationship: dto.emergencyRelationship || dto.emergencyContactRelationship || undefined,
+        idType: dto.idType ?? undefined,
+        idNumber: dto.idNumber ?? undefined,
+        idFrontUrl: dto.idFrontImage || dto.idFrontUrl || undefined,
+        idBackUrl: dto.idBackImage || dto.idBackUrl || undefined,
+        selfieUrl: dto.selfieImage || dto.selfieUrl || undefined,
+        vehicleType: dto.vehicleType ?? undefined,
+        plateNumber: dto.plateNumber ?? undefined,
+        vehicleBrand: dto.vehicleBrand ?? undefined,
+        vehicleModel: dto.vehicleModel ?? undefined,
+        vehicleColor: dto.vehicleColor ?? undefined,
+        vehicleYear: vehicleYearInt,
+        vehiclePhotoUrl: dto.vehiclePhoto || dto.vehiclePhotoUrl || undefined,
+        driversLicenseUrl: dto.driversLicenseDoc || dto.driversLicenseUrl || undefined,
+        vehiclePaperUrl: dto.vehiclePaperDoc || dto.vehiclePaperUrl || undefined,
+        insuranceUrl: dto.insuranceDoc || dto.insuranceUrl || undefined,
+        roadWorthinessUrl: dto.roadWorthinessDoc || dto.roadWorthinessUrl || undefined,
+        bankName: dto.bankName ?? undefined,
+        bankCode: dto.bankCode ?? undefined,
+        accountNumber: dto.accountNumber ?? undefined,
+        accountName: dto.accountName ?? undefined,
+        acceptedTerms: dto.acceptedTerms ?? undefined,
+        acceptedCommission: dto.acceptedCommission ?? undefined,
+        acceptedDeliveryPolicy: dto.acceptedPrivacy ?? dto.acceptedDeliveryPolicy ?? undefined,
       },
     });
-
-    return {
-      success: true,
-      message:
-        'Application submitted successfully. Our team will review your documents.',
-      application: updated,
-    };
   }
+
+  // Fetch the latest updated application data
+  const application = await this.getApplication(applicationId);
+
+  // 1. Validation - Agreements
+  if (
+    !application.acceptedTerms ||
+    !application.acceptedCommission ||
+    !application.acceptedDeliveryPolicy
+  ) {
+    throw new BadRequestException(
+      'You must accept all agreements before submitting.',
+    );
+  }
+
+  // 2. Validation - Identity
+  if (
+    !application.idFrontUrl ||
+    !application.idBackUrl ||
+    !application.selfieUrl ||
+    !application.idNumber ||
+    !application.email ||
+    !application.phoneNumber
+  ) {
+    throw new BadRequestException('Identity verification fields are incomplete.');
+  }
+
+  // 3. Validation - Vehicle
+  if (
+    !application.vehicleType ||
+    !application.plateNumber ||
+    !application.vehicleBrand ||
+    !application.vehicleModel
+  ) {
+    throw new BadRequestException('Vehicle information is incomplete.');
+  }
+
+  // 4. Validation - Banking
+  if (
+    !application.bankName ||
+    !application.accountNumber ||
+    !application.accountName
+  ) {
+    throw new BadRequestException('Bank information is incomplete.');
+  }
+
+  // 5. Check if already submitted
+  if (
+    application.status === RiderApplicationStatus.SUBMITTED ||
+    application.status === RiderApplicationStatus.UNDER_REVIEW
+  ) {
+    throw new ConflictException('Application has already been submitted.');
+  }
+
+  // 6. System Uniqueness Checks
+  if (application.email) {
+    const emailConflict = await this.prisma.user.findFirst({
+      where: {
+        email: application.email,
+        id: { not: userId },
+      },
+    });
+    if (emailConflict) {
+      throw new ConflictException('An account with this email address already belongs to another user.');
+    }
+  }
+
+  if (application.phoneNumber && !application.phoneNumber.startsWith('PENDING_')) {
+    const phoneConflict = await this.prisma.user.findFirst({
+      where: {
+        phoneNumber: application.phoneNumber,
+        id: { not: userId },
+      },
+    });
+    if (phoneConflict) {
+      throw new ConflictException('An account with this phone number already belongs to another user.');
+    }
+  }
+
+  if (application.plateNumber) {
+    const plateConflict = await this.prisma.riderApplication.findFirst({
+      where: {
+        plateNumber: application.plateNumber,
+        status: {
+          in: [
+            RiderApplicationStatus.SUBMITTED,
+            RiderApplicationStatus.UNDER_REVIEW,
+          ],
+        },
+        id: { not: applicationId },
+      },
+    });
+    if (plateConflict) {
+      throw new ConflictException(
+        'This vehicle plate number is already attached to an open processing application.',
+      );
+    }
+  }
+
+  // 🟢 7. FINAL SYNC TO USER & RIDER PROFILE TABLES
+  await this.prisma.user.update({
+    where: { id: userId },
+    data: {
+      firstName: application.firstName || user.firstName,
+      lastName: application.lastName || user.lastName,
+      phoneNumber:
+        application.phoneNumber && !application.phoneNumber.startsWith('PENDING_')
+          ? application.phoneNumber
+          : user.phoneNumber,
+      avatarUrl: application.profilePhotoUrl || application.selfieUrl || user.avatarUrl,
+    },
+  });
+
+  // 8. Seal Application State
+  const updated = await this.prisma.riderApplication.update({
+    where: { id: applicationId },
+    data: {
+      status: RiderApplicationStatus.SUBMITTED,
+      submittedAt: new Date(),
+      currentStep: 7,
+    },
+  });
+
+  return {
+    success: true,
+    message:
+      'Application submitted successfully. Our team will review your documents.',
+    application: updated,
+  };
+}
 }

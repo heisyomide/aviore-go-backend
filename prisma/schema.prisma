@@ -616,6 +616,74 @@ enum ShipmentStatus {
   DISPUTED
 }
 
+enum DisputeRole {
+  CUSTOMER
+  RIDER
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum ResolutionOutcome {
+  REFUND_CUSTOMER
+  CREDIT_RIDER
+  PARTIAL_REFUND
+  NO_ACTION
+}
+
+model ChatMessage {
+  id         String   @id @default(uuid())
+  jobId      String
+  senderId   String
+  senderRole String   // e.g. "CUSTOMER" | "RIDER" | "ADMIN"
+  text       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // If you have relations set up:
+  // shipment Shipment @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+}
+
+model Dispute {
+  id              String             @id @default(uuid())
+  jobId           String
+  reporterId      String             // User ID of the customer or rider opening the dispute
+  reportedByRole  DisputeRole
+  reason          String
+  description     String
+  status          DisputeStatus      @default(OPEN)
+  resolution      ResolutionOutcome?
+  adminNotes      String?            @db.Text
+  resolvedById    String?            // Admin user ID who resolved it
+  resolvedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  logs            DisputeLog[]
+
+  @@index([jobId])
+  @@index([reporterId])
+  @@index([status])
+}
+
+model DisputeLog {
+  id        String   @id @default(uuid())
+  disputeId String
+  dispute   Dispute  @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  actorId   String
+  action    String   // e.g., "STATUS_UPDATED", "NOTE_ADDED", "RESOLVED"
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([disputeId])
+}
+
 enum DeliveryTier {
   STANDARD
   EXPRESS

@@ -636,18 +636,49 @@ enum ResolutionOutcome {
 }
 
 model ChatMessage {
-  id         String   @id @default(uuid())
-  jobId      String
-  senderId   String
-  senderRole String   // e.g. "CUSTOMER" | "RIDER" | "ADMIN"
-  text       String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  // If you have relations set up:
-  // shipment Shipment @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  id          String      @id @default(uuid())
+  jobId       String
+  senderId    String
+  senderRole  SenderRole
+  text        String
+  messageType MessageType @default(TEXT)
+  isRead      Boolean     @default(false)
+  createdAt   DateTime    @default(now())
 
   @@index([jobId])
+}
+
+model CallLog {
+  id          String     @id @default(uuid())
+  jobId       String
+  callerId    String
+  receiverId  String
+  status      CallStatus @default(MISSED)
+  startedAt   DateTime   @default(now())
+  endedAt     DateTime?
+  duration    Int?       @default(0) // Duration in seconds
+
+  @@index([jobId])
+}
+
+enum SenderRole {
+  CUSTOMER
+  RIDER
+  ADMIN
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VOICE
+  SYSTEM
+}
+
+enum CallStatus {
+  MISSED
+  DECLINED
+  COMPLETED
+  FAILED
 }
 
 model Dispute {

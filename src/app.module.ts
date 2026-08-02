@@ -28,10 +28,11 @@ import { HealthController } from './health/health.controller';
 import { HealthModule } from './health/health.module';
 import { NotificationModule } from './notification/notification.module';
 import { DisputeModule } from './dispute/dispute.module';
-import { ChatModule } from './chat/chat.module';
+import { WebSocketModule } from './communication/websocket/websocket.module';
+
 
 @Module({
-  imports: [DatabaseModule,ChatModule, DisputeModule, LandmarksModule, NotificationModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
+  imports: [DatabaseModule, DatabaseModule, WebSocketModule, DisputeModule, LandmarksModule, NotificationModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
     RiderDashboardModule, FlutterwaveModule , PricingModule,UsersModule, 
     PaymentsModule, TrackingModule, AuthModule, RiderProfileModule, WalletModule, ShipmentsModule,ScheduleModule.forRoot(), RiderModule,],
   controllers: [],

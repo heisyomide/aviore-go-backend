@@ -53,31 +53,43 @@ export class NotificationController {
 
 
 
-  @Post('subscribe')
+ @Post('subscribe')
   @UseGuards(JwtAuthGuard)
   async savePushSubscription(@Req() req: any, @Body() subscription: any) {
-    const userId = req.user.id; // Adjust based on how your auth strategy attaches the user
+    // Safely fallback across all possible property names from different strategies
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
 
-    if (!subscription || !subscription.endpoint) {
+    if (!userId) {
+      throw new BadRequestException('User context missing from authentication token');
+    }
+
+    if (!subscription || !subscription.endpoint || !subscription.keys) {
       throw new BadRequestException('Invalid subscription payload');
     }
 
     const { endpoint, keys } = subscription;
 
-    // Upsert the subscription so the same browser/device updates cleanly instead of duplicating
-    return this.prisma.pushSubscription.upsert({
-      where: { endpoint },
-      update: {
-        userId,
-        p256dh: keys.p256dh,
-        auth: keys.auth,
-      },
-      create: {
-        userId,
-        endpoint,
-        p256dh: keys.p256dh,
-        auth: keys.auth,
-      },
-    });
+    try {
+      const savedSubscription = await this.prisma.pushSubscription.upsert({
+        where: { endpoint },
+        update: {
+          userId,
+          p256dh: keys.p256dh,
+          auth: keys.auth,
+        },
+        create: {
+          userId,
+          endpoint,
+          p256dh: keys.p256dh,
+          auth: keys.auth,
+        },
+      });
+
+      console.log(`[Push Subscription Saved Successfully] User: ${userId}`);
+      return { success: true, data: savedSubscription };
+    } catch (err) {
+      console.error('[Push Subscription DB Error]:', err);
+      throw new BadRequestException('Failed to persist push subscription');
+    }
   }
 }

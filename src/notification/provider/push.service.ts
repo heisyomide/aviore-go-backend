@@ -10,13 +10,14 @@ export class PushNotificationService {
     private readonly prisma: PrismaService,
     @Optional() private readonly jobCommGateway?: JobCommGateway,
   ) {
-    // Initialize web-push with your VAPID keys
-    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-      webpush.setVapidDetails(
-        process.env.VAPID_MAILTO || 'mailto:support@aviorego.com.ng',
-        process.env.VAPID_PUBLIC_KEY,
-        process.env.VAPID_PRIVATE_KEY,
-      );
+    const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
+    const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
+    const mailto = process.env.VAPID_MAILTO?.trim() || 'mailto:support@aviorego.com.ng';
+
+    if (publicKey && privateKey) {
+      webpush.setVapidDetails(mailto, publicKey, privateKey);
+    } else {
+      console.warn('[WebPush Warning] VAPID keys are missing from environment variables!');
     }
   }
 
@@ -44,19 +45,23 @@ export class PushNotificationService {
 
     // 3. Dispatch actual Web Push to the user's physical device/browser
     try {
-      // Assuming you have a PushSubscription model stored in your database linked to the user
       const subscriptions = await this.prisma.pushSubscription.findMany({
         where: { userId },
       });
+
+      if (!subscriptions || subscriptions.length === 0) {
+        console.warn(`[WebPush Warning] No push subscriptions found in DB for user: ${userId}`);
+        return notification;
+      }
 
       const payload = JSON.stringify({
         title,
         body,
         icon: '/images/logo.png',
+        url: data?.url || '/',
         data: data || {},
       });
 
-      // Send to all registered devices/browsers for this user
       await Promise.all(
         subscriptions.map(async (sub) => {
           const pushSubscriptionObject = {
@@ -69,20 +74,26 @@ export class PushNotificationService {
 
           try {
             await webpush.sendNotification(pushSubscriptionObject, payload);
+            console.log(`[WebPush Success] Sent to endpoint for user ${userId}`);
           } catch (err: any) {
-            // If subscription is expired or invalid (410 / 404), delete it from DB
-            if (err.statusCode === 410 || err.statusCode === 404) {
+            // Enhanced Diagnostic Logging
+            console.error(`[WebPush Error Details] Status: ${err.statusCode} | Message: ${err.message}`);
+            if (err.body) {
+              console.error(`[WebPush Error Body]:`, err.body);
+            }
+
+            // If subscription is expired or invalid (410 / 404 / 403 / 400), clean it up
+            if ([404, 410, 403, 400].includes(err.statusCode)) {
               await this.prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
-            } else {
-              console.error('[WebPush Error] Failed to send to endpoint:', err.message);
+              console.log(`[WebPush Cleanup] Removed invalid subscription ID: ${sub.id}`);
             }
           }
         }),
       );
 
-      console.log(`[Push Alert Sent to Phone] User: ${userId} | ${title}`);
+      console.log(`[Push Alert Finished Processing] User: ${userId} | ${title}`);
     } catch (pushErr) {
-      console.error('[Push Service Error] Failed to query or dispatch web push:', pushErr);
+      console.error('[Push Service Critical Error]:', pushErr);
     }
 
     return notification;

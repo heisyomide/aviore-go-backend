@@ -21,8 +21,11 @@ export class AdminBroadcastService {
     const { title, body, targetAudience, channels } = dto;
 
     // 1. Build database filter targeting verified active accounts
+// 1. Build database filter allowing active/pending users or removing status check
     const whereClause: any = {
-      status: IdentityStatus.VERIFIED,
+      status: {
+        in: [IdentityStatus.VERIFIED, IdentityStatus.PENDING_VERIFICATION, 'PENDING_VERIFICATION' as any],
+      },
     };
 
     if (targetAudience) {

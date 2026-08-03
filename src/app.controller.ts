@@ -10,11 +10,5 @@ export class AppController {
     return this.appService.getHello();
   }
 
-  @Get('version')
-getAppVersion() {
-  return {
-    version: process.env.APP_VERSION || '1.0.1', // Increment this when you deploy updates
-    buildTime: process.env.BUILD_TIMESTAMP || Date.now(),
-  };
-}
+
 }

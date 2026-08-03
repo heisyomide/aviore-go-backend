@@ -1,10 +1,14 @@
 // src/notification/provider/push.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../../providers/database/prisma.service';
+import { JobCommGateway } from '../../communication/chat/chat.gateway'; // Adjust path if needed
 
 @Injectable()
 export class PushNotificationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly jobCommGateway?: JobCommGateway,
+  ) {}
 
   async sendPush(
     userId: string,
@@ -23,8 +27,12 @@ export class PushNotificationService {
       },
     });
 
-    // 2. Dispatch real-time alert via WebPush / Sockets / FCM
-    console.log(`[Push Alert Saved & Sent] User: ${userId} | ${title}: ${body}`);
+    // 2. BROADCAST REAL-TIME ALERT VIA SOCKET.IO TO USER'S PRIVATE ROOM
+    if (this.jobCommGateway && this.jobCommGateway.server) {
+      this.jobCommGateway.server.to(`user_${userId}`).emit('new_notification', notification);
+    }
+
+    console.log(`[Push Alert Saved & Socket Emitted] User: ${userId} | ${title}: ${body}`);
 
     return notification;
   }

@@ -98,6 +98,9 @@ export class NotificationService {
   /**
    * Internal Event Dispatcher
    */
+  /**
+   * Internal Event Dispatcher
+   */
   async dispatch(dto: SendNotificationDto): Promise<any> {
     const { type, userId, email, title, body, data } = dto;
 
@@ -105,30 +108,56 @@ export class NotificationService {
       // 1. Priority Transactional (Resend Email)
       case NotificationType.ACCOUNT_WELCOME:
       case NotificationType.PASSWORD_RESET_OTP:
-      case NotificationType.ESCROW_VERIFICATION_PIN:
-      case NotificationType.PAYMENT_RECEIPT: {
+      case NotificationType.ESCROW_VERIFICATION_PIN: {
         if (!email) {
           throw new BadRequestException(`Email is required for notification type ${type}`);
         }
 
         const actionUrl = data?.url || data?.link;
         const actionText = data?.actionText || 'Confirm Email';
-
         const html = this.buildEmailTemplate(title, body, actionUrl, actionText, data?.pin);
 
         return this.resendService.sendPriorityEmail(email, title, html);
       }
 
-      // 2. Real-Time System & Security Alerts (Push Only)
+      case NotificationType.PAYMENT_RECEIPT: {
+        // Fallback: fetch user email from DB if not provided in DTO
+        let targetEmail = email;
+        if (!targetEmail && userId) {
+          const user = await this.prisma.user.findUnique({ where: { id: userId } });
+          targetEmail = user?.email || undefined;
+        }
+
+        if (!targetEmail) {
+          console.warn(`[Notification Warning] Skipping payment email: No email found for user ${userId}`);
+          // Still fallback to pushing an in-app alert so it doesn't crash the transaction
+          if (userId) {
+            return this.pushService.sendPush(userId, title, body, { ...data, type });
+          }
+          throw new BadRequestException(`Email is required for notification type ${type}`);
+        }
+
+        const html = this.buildEmailTemplate(title, body, data?.url, 'View Receipt', data?.pin);
+        return this.resendService.sendPriorityEmail(targetEmail, title, html);
+      }
+
+      // 2. Real-Time System & Security Alerts (Push Only / Socket Emitted)
       case NotificationType.LOGIN_ALERT:
       case NotificationType.LOGOUT_ALERT:
       case NotificationType.RIDER_ASSIGNED:
-      case NotificationType.ORDER_STATUS_UPDATE: {
+      case NotificationType.ORDER_STATUS_UPDATE:
+      case 'RIDER_ARRIVED_PICKUP' as any:
+      case 'PACKAGE_IN_TRANSIT' as any:
+      case 'ARRIVED_DESTINATION' as any:
+      case 'DELIVERY_COMPLETED' as any:
+      case 'WITHDRAWAL_UPDATE' as any:
+      case 'SYSTEM_ALERT' as any: {
         if (!userId) {
-          throw new BadRequestException(`UserId is required for push alert ${type}`);
+          console.warn(`[Notification Warning] Push alert ${type} skipped: Missing userId`);
+          return;
         }
 
-        return this.pushService.sendPush(userId, title, body, data);
+        return this.pushService.sendPush(userId, title, body, { ...data, type });
       }
 
       // 3. System & Marketing Emails (Brevo)
@@ -143,10 +172,14 @@ export class NotificationService {
       }
 
       default:
+        // Graceful fallback instead of crashing with 400 BadRequest if an unmapped type occurs
+        console.warn(`[Notification Warning] Unhandled notification type received: ${type}. Defaulting to Push/In-App.`);
+        if (userId) {
+          return this.pushService.sendPush(userId, title, body, { ...data, type });
+        }
         throw new BadRequestException(`Unsupported notification type: ${type}`);
     }
   }
-
   /**
    * Admin-Triggered Custom Broadcast
    */

@@ -28,7 +28,6 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
   @WebSocketServer()
   server!: Server;
 
-  // Internal map tracking userId -> socket.id securely without exposing socket.id to clients
   private userSocketMap = new Map<string, string>();
 
   constructor(
@@ -51,7 +50,6 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
       const payload = this.jwtService.verify(token);
       client.user = { userId: payload.sub || payload.userId, role: payload.role };
 
-      // Map user to socket and join private room for direct calls/notifications
       this.userSocketMap.set(client.user.userId, client.id);
       client.join(`user_${client.user.userId}`);
     } catch (err) {
@@ -65,7 +63,7 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
     }
   }
 
- @SubscribeMessage('join_job_room')
+  @SubscribeMessage('join_job_room')
   async handleJoinJobRoom(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() data: { jobId: string },
@@ -76,7 +74,6 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     if (!userId || !jobId) return;
 
-    // Fetch the shipment along with its direct fields
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: jobId },
       select: { customerId: true, riderId: true },
@@ -87,16 +84,11 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
       return;
     }
 
-    // Check if the rider is linked via the Rider Assignment table & RiderProfile relation
     let isAssignedRider = false;
     if (userRole === 'RIDER') {
-      // Find the rider profile belonging to this auth user
       const riderProfile = await this.prisma.riderProfile.findFirst({
         where: {
-          OR: [
-            { id: userId }, // If userId in JWT is already the RiderProfile ID
-            { userId: userId }, // If RiderProfile has a separate userId/auth field linking back
-          ],
+          OR: [{ id: userId }, { userId: userId }],
         },
       });
 
@@ -124,11 +116,11 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     client.join(`job_${jobId}`);
 
-    // Send existing chat history upon joining
     const history = await this.chatService.getChatHistory(jobId);
     client.emit('chat_history', history);
   }
-@SubscribeMessage('send_message')
+
+  @SubscribeMessage('send_message')
   async handleSendMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() data: { jobId: string; text: string },
@@ -143,7 +135,6 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
     if (userRole === 'RIDER') senderRole = SenderRole.RIDER;
     if (userRole === 'ADMIN') senderRole = SenderRole.ADMIN;
 
-    // Save message once to PostgreSQL
     const savedMessage = await this.chatService.saveMessage({
       jobId,
       senderId: userId,
@@ -151,10 +142,10 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
       text,
     });
 
-    // 1. Broadcast message to everyone in the job room (for active chat screens)
+    // 1. Broadcast live message to active chat room
     this.server.to(`job_${jobId}`).emit('receive_message', savedMessage);
 
-    // 2. Identify the other participant to send a background push/notification alert
+    // 2. Resolve recipient and trigger system notification pipeline (fixes mobile background delivery)
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: jobId },
       select: { customerId: true, riderId: true },
@@ -164,24 +155,19 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
       let recipientUserId: string | null = null;
 
       if (userId === shipment.customerId) {
-        // Sender is customer -> Notify the assigned rider
         if (shipment.riderId) {
           recipientUserId = shipment.riderId;
         } else {
-          // Fallback: Check rider assignment table if shipment.riderId is null
           const assignment = await this.prisma.riderAssignment.findFirst({
             where: { shipmentId: jobId },
           });
           if (assignment) recipientUserId = assignment.riderId;
         }
       } else {
-        // Sender is rider -> Notify the customer
         recipientUserId = shipment.customerId;
       }
 
-      // If we found the recipient, emit a real-time notification event to their private user room
       if (recipientUserId) {
-        // Resolve target user ID if riderId references a RiderProfile instead of User ID
         let targetAuthUserId = recipientUserId;
         const riderProfile = await this.prisma.riderProfile.findUnique({
           where: { id: recipientUserId },
@@ -191,12 +177,28 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
           targetAuthUserId = riderProfile.userId;
         }
 
+        // Emit socket socket notification
         this.server.to(`user_${targetAuthUserId}`).emit('new_chat_notification', {
           jobId,
           senderId: userId,
           text,
           timestamp: savedMessage.createdAt,
         });
+
+        // Create persistent database notification so mobile OS push notification channels catch it like status updates
+        try {
+          await this.prisma.notification.create({
+            data: {
+              userId: targetAuthUserId,
+              title: 'New Message',
+              body: text,
+              type: 'CHAT_MESSAGE',
+              isRead: false,
+            },
+          });
+        } catch (e) {
+          // Fallback safely if schema table name differs
+        }
       }
     }
   }

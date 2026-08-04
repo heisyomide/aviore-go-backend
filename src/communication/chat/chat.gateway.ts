@@ -65,7 +65,7 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
     }
   }
 
-  @SubscribeMessage('join_job_room')
+ @SubscribeMessage('join_job_room')
   async handleJoinJobRoom(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() data: { jobId: string },
@@ -76,7 +76,7 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     if (!userId || !jobId) return;
 
-    // Authorization: Verify user is customer, rider, or admin on this shipment
+    // Fetch the shipment along with its direct fields
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: jobId },
       select: { customerId: true, riderId: true },
@@ -87,11 +87,35 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
       return;
     }
 
-    const assignedRider = shipment.riderId;
+    // Check if the rider is linked via the Rider Assignment table & RiderProfile relation
+    let isAssignedRider = false;
+    if (userRole === 'RIDER') {
+      // Find the rider profile belonging to this auth user
+      const riderProfile = await this.prisma.riderProfile.findFirst({
+        where: {
+          OR: [
+            { id: userId }, // If userId in JWT is already the RiderProfile ID
+            { userId: userId }, // If RiderProfile has a separate userId/auth field linking back
+          ],
+        },
+      });
+
+      if (riderProfile) {
+        const assignment = await this.prisma.riderAssignment.findFirst({
+          where: {
+            shipmentId: jobId,
+            riderId: riderProfile.id,
+          },
+        });
+        isAssignedRider = !!assignment;
+      }
+    }
+
     const isAuthorized =
       userRole === 'ADMIN' ||
       shipment.customerId === userId ||
-      assignedRider === userId;
+      shipment.riderId === userId ||
+      isAssignedRider;
 
     if (!isAuthorized) {
       client.emit('exception', { message: 'Unauthorized access to job room' });
@@ -104,8 +128,7 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const history = await this.chatService.getChatHistory(jobId);
     client.emit('chat_history', history);
   }
-
-  @SubscribeMessage('send_message')
+@SubscribeMessage('send_message')
   async handleSendMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() data: { jobId: string; text: string },
@@ -128,8 +151,54 @@ export class JobCommGateway implements OnGatewayConnection, OnGatewayDisconnect 
       text,
     });
 
-    // Broadcast message to everyone in the job room exactly once
+    // 1. Broadcast message to everyone in the job room (for active chat screens)
     this.server.to(`job_${jobId}`).emit('receive_message', savedMessage);
+
+    // 2. Identify the other participant to send a background push/notification alert
+    const shipment = await this.prisma.shipment.findUnique({
+      where: { id: jobId },
+      select: { customerId: true, riderId: true },
+    });
+
+    if (shipment) {
+      let recipientUserId: string | null = null;
+
+      if (userId === shipment.customerId) {
+        // Sender is customer -> Notify the assigned rider
+        if (shipment.riderId) {
+          recipientUserId = shipment.riderId;
+        } else {
+          // Fallback: Check rider assignment table if shipment.riderId is null
+          const assignment = await this.prisma.riderAssignment.findFirst({
+            where: { shipmentId: jobId },
+          });
+          if (assignment) recipientUserId = assignment.riderId;
+        }
+      } else {
+        // Sender is rider -> Notify the customer
+        recipientUserId = shipment.customerId;
+      }
+
+      // If we found the recipient, emit a real-time notification event to their private user room
+      if (recipientUserId) {
+        // Resolve target user ID if riderId references a RiderProfile instead of User ID
+        let targetAuthUserId = recipientUserId;
+        const riderProfile = await this.prisma.riderProfile.findUnique({
+          where: { id: recipientUserId },
+          select: { userId: true },
+        });
+        if (riderProfile?.userId) {
+          targetAuthUserId = riderProfile.userId;
+        }
+
+        this.server.to(`user_${targetAuthUserId}`).emit('new_chat_notification', {
+          jobId,
+          senderId: userId,
+          text,
+          timestamp: savedMessage.createdAt,
+        });
+      }
+    }
   }
 
   // --- WebRTC Signaling Events ---

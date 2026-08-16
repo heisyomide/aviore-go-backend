@@ -20,8 +20,7 @@ export class AdminBroadcastService {
   async sendBroadcast(dto: AdminBroadcastDto, adminUserId: string) {
     const { title, body, targetAudience, channels } = dto;
 
-    // 1. Build database filter targeting verified active accounts
-// 1. Build database filter allowing active/pending users or removing status check
+    // 1. Build database filter targeting active accounts
     const whereClause: any = {
       status: {
         in: [IdentityStatus.VERIFIED, IdentityStatus.PENDING_VERIFICATION, 'PENDING_VERIFICATION' as any],
@@ -29,7 +28,7 @@ export class AdminBroadcastService {
     };
 
     if (targetAudience) {
-      whereClause.role = targetAudience;
+      whereClause.role = targetAudience; // e.g., UserRole.ORGANIZER
     }
 
     // 2. Query target recipients
@@ -43,7 +42,7 @@ export class AdminBroadcastService {
 
     if (!recipients.length) {
       throw new BadRequestException(
-        `No verified users found for target audience: ${targetAudience || 'GLOBAL_ALL'}`,
+        `No eligible users found for target audience: ${targetAudience || 'GLOBAL_ALL'}`,
       );
     }
 
@@ -80,7 +79,21 @@ export class AdminBroadcastService {
       });
     }
 
-    // 5. Record Audit Log entries in BroadcastLog
+    // 5. IN-APP / SYSTEM: Create in-app notification rows so they appear on the user's /notifications page
+    // (Uncomment if your schema has an in-app notification model like prisma.notification)
+    /*
+    await this.prisma.notification.createMany({
+      data: recipientUserIds.map((userId) => ({
+        userId,
+        title,
+        message: body,
+        type: 'ADMIN',
+        isRead: false,
+      })),
+    });
+    */
+
+    // 6. Record Audit Log entries in BroadcastLog
     await this.prisma.$transaction(
       channels.map((channel) =>
         this.prisma.broadcastLog.create({

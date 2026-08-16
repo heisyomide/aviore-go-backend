@@ -17,13 +17,14 @@ export class AdminBroadcastDto {
   @IsNotEmpty()
   body!: string;
 
-  // Optional: If omitted/undefined, broadcasts to ALL users globally
+  // Optional: If omitted, broadcasts globally. 
+  // Supports UserRole.ORGANIZER, UserRole.RIDER, UserRole.CUSTOMER, etc.
   @IsOptional()
   @IsEnum(UserRole)
-  targetAudience?: UserRole; // RIDER or CUSTOMER
+  targetAudience?: UserRole;
 
   @IsArray()
   @ArrayMinSize(1)
   @IsEnum(ChannelType, { each: true })
-  channels!: ChannelType[]; // e.g. [ChannelType.PUSH] or [ChannelType.PUSH, ChannelType.EMAIL]
+  channels!: ChannelType[];
 }

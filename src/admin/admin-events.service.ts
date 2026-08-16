@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
-import { CreateTripDto } from './dto/create-trip.dto';
+import { CreateTripDto, UpdateRouteCoordinatesDto } from './dto/create-trip.dto';
 
 @Injectable()
 export class AdminEventsService {
@@ -195,4 +195,32 @@ async getAcceptedUnscheduledEvents() {
       orderBy: { createdAt: 'desc' },
     });
   }
+
+  async updateRouteCoordinates(routeId: string, dto: UpdateRouteCoordinatesDto) {
+  // 1. Update the route destination coordinates
+  const updatedRoute = await this.prisma.eventRoute.update({
+    where: { id: routeId },
+    data: {
+      destinationLat: dto.destinationLat,
+      destinationLng: dto.destinationLng,
+    },
+  });
+
+  // 2. Loop and update each pickup point's latitude and longitude if provided
+  if (dto.pickupPoints && dto.pickupPoints.length > 0) {
+    for (const point of dto.pickupPoints) {
+      await this.prisma.pickupPoint.update({
+        where: { id: point.id },
+        data: {
+          latitude: point.latitude,
+          longitude: point.longitude,
+        },
+      }).catch(() => {
+        // Ignore if pickup point ID doesn't match or isn't found
+      });
+    }
+  }
+
+  return { success: true, message: 'Route and pickup point coordinates updated successfully', route: updatedRoute };
+}
 }

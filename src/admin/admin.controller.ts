@@ -16,7 +16,7 @@ import { GetUser } from '../auth/decorators/get-user.decorator';
 import { UserRole } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AdminEventsService } from './admin-events.service';
-import { CreateTripDto } from './dto/create-trip.dto';
+import { CreateTripDto, UpdateRouteCoordinatesDto } from './dto/create-trip.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -368,6 +368,7 @@ export class AdminController {
     return this.adminEventsService.publishTripLive(id);
   }
   
+  
   /**
    * 8. WILDCARD CATCH-ALLS (MUST REMAIN AT THE BOTTOM OF THE FILE)
    */
@@ -388,4 +389,12 @@ export class AdminController {
       throw new InternalServerErrorException('Fatal failure during backend manifest ingestion workflow.');
     }
   }
+
+  @Patch(':id/coordinates')
+async updateRouteCoordinates(
+  @Param('id') routeId: string,
+  @Body() dto: UpdateRouteCoordinatesDto,
+) {
+  return this.adminEventsService.updateRouteCoordinates(routeId, dto);
+}
 }

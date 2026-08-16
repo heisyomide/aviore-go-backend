@@ -857,15 +857,19 @@ enum EventStatus {
   CANVASSED
   CANCELLED
 }
-
 model EventRoute {
-  id          String   @id @default(uuid())
-  eventId     String
-  originCity  String
-  destination String
-  price       Decimal  @db.Decimal(10, 2)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(uuid())
+  eventId        String
+  originCity     String
+  destination    String
+  
+  // NEW: Exact map coordinates for the route's destination/venue
+  destinationLat Float?
+  destinationLng Float?
+
+  price          Decimal  @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   event        Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
   pickupPoints PickupPoint[]
@@ -884,6 +888,11 @@ model PickupPoint {
   address     String
   landmark    String?
   maxCapacity Int      @default(40)
+  
+  // NEW: Exact GPS coordinates for the pickup point pin on the map
+  latitude    Float?
+  longitude   Float?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

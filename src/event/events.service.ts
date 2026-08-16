@@ -632,4 +632,22 @@ async updateOrganizerSettings(
     profile,
   };
 }
+
+// src/event/events.service.ts
+
+async joinWaitlist(userId: string, dto: { eventId: string; routeId: string; pickupPointId?: string }) {
+  return await this.prisma.routeWaitlist.upsert({
+    where: {
+      routeId_userId: {
+        routeId: dto.routeId,
+        userId: userId,
+      },
+    },
+    update: {},
+    create: {
+      routeId: dto.routeId,
+      userId: userId,
+    },
+  });
+}
 }

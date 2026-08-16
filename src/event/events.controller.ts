@@ -83,6 +83,18 @@ export class EventsController {
     return this.eventsService.getTripManifest(tripId);
   }
 
+  // src/event/events.controller.ts
+
+@Post('waitlist')
+@UseGuards(JwtAuthGuard)
+async joinWaitlist(
+  @Body() dto: { eventId: string; routeId: string; pickupPointId?: string },
+  @Req() req,
+) {
+  const userId = req.user.id;
+  return await this.eventsService.joinWaitlist(userId, dto);
+}
+
   // ==========================================
   // 5. ORGANIZER DASHBOARD & MANAGEMENT ROUTES
   // ==========================================

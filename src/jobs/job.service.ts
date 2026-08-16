@@ -11,7 +11,7 @@ import { RealtimeService } from 'src/realtime/realtime.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
 import { NotificationService } from 'src/notification/notification.service';
 import { NotificationType } from 'src/notification/dto/send-notification.dto';
-import { ShipmentStatus, VehicleType, TripStatus } from '@prisma/client';
+import { ShipmentStatus, VehicleType } from '@prisma/client';
 
 @Injectable()
 export class RiderJobsService {
@@ -47,41 +47,58 @@ export class RiderJobsService {
   /**
    * Get all available jobs (Splits automatically between small parcel shipments and event transit jobs based on vehicle type)
    */
-  async getAvailableJobs(userId: string) {
+async getAvailableJobs(userId: string) {
     const rider = await this.getActiveRider(userId, true);
+    const vehicleType = rider.activeVehicle?.type;
 
-    // If driver's active vehicle is a BUS or VAN, fetch available event transit jobs instead of parcel shipments
-    if (rider.activeVehicle?.type === VehicleType.BUS || rider.activeVehicle?.type === VehicleType.VAN) {
-      const availableTrips = await this.prisma.eventTrip.findMany({
-        where: {
-          driverId: null,
-          isPublished: false,
-          status: TripStatus.SCHEDULED,
-        },
-        include: {
-          route: {
-            include: {
-              event: true,
-              pickupPoints: true,
-            },
+    const isBusOrVan = 
+      vehicleType === VehicleType.BUS || 
+      vehicleType === VehicleType.VAN;
+
+    if (isBusOrVan) {
+      return this.fetchEventTransitJobs();
+    }
+
+    return this.fetchParcelShipmentJobs();
+  }
+
+  /**
+   * Fetch available bus/van event transit jobs
+   */
+  private async fetchEventTransitJobs() {
+    const availableTrips = await this.prisma.eventTrip.findMany({
+      where: {
+        driverId: null,
+        isPublished: true,
+        status: 'SCHEDULED',
+      },
+      include: {
+        route: {
+          include: {
+            event: true,
+            pickupPoints: true,
           },
         },
-        orderBy: { departureTime: 'asc' },
-        take: 20,
-      });
+      },
+      orderBy: { departureTime: 'asc' },
+      take: 20,
+    });
 
-      return {
-        jobType: 'EVENT_TRANSIT',
-        jobs: availableTrips.map((trip) => ({
+    return {
+      jobType: 'EVENT_TRANSIT',
+      jobs: availableTrips.map((trip) => {
+        const tripPrice = Number(trip.route.price);
+        return {
           tripId: trip.id,
           tripLeg: trip.tripLeg,
           departureTime: trip.departureTime,
           arrivalTime: trip.arrivalTime,
+          payout: tripPrice,
           route: {
             routeId: trip.route.id,
             originCity: trip.route.originCity,
             destination: trip.route.destination,
-            price: Number(trip.route.price),
+            price: tripPrice,
           },
           event: {
             eventId: trip.route.event.id,
@@ -94,11 +111,15 @@ export class RiderJobsService {
             bannerUrl: trip.route.event.bannerUrl,
           },
           pickupPoints: trip.route.pickupPoints,
-        })),
-      };
-    }
+        };
+      }),
+    };
+  }
 
-    // Otherwise, proceed with standard parcel shipments query for bike/car dispatch riders
+  /**
+   * Fetch standard parcel delivery jobs for bikes and cars
+   */
+  private async fetchParcelShipmentJobs() {
     const shipments = await this.prisma.shipment.findMany({
       where: {
         status: 'PENDING',
@@ -110,7 +131,15 @@ export class RiderJobsService {
 
     return {
       jobType: 'PARCEL_DELIVERY',
-      jobs: shipments,
+      jobs: shipments.map((shipment) => {
+        const payoutAmount = Number(shipment.riderShare ?? shipment.totalPrice ?? 0);
+        return {
+          ...shipment,
+          totalPrice: Number(shipment.totalPrice),
+          riderShare: payoutAmount,
+          payout: payoutAmount, // Ensures frontend pricing fallback picks up a valid number
+        };
+      }),
     };
   }
 
@@ -120,7 +149,6 @@ export class RiderJobsService {
   async getJobDetails(jobId: string, riderUserId: string) {
     const rider = await this.getActiveRider(riderUserId);
 
-    // Check if it's an event transit job (Bus/Van drivers)
     if (rider.activeVehicle?.type === VehicleType.BUS || rider.activeVehicle?.type === VehicleType.VAN) {
       const trip = await this.prisma.eventTrip.findUnique({
         where: { id: jobId },
@@ -128,9 +156,7 @@ export class RiderJobsService {
           route: {
             include: {
               event: {
-                include: {
-                  organizer: true,
-                },
+                include: { organizer: true },
               },
               pickupPoints: true,
             },
@@ -146,6 +172,8 @@ export class RiderJobsService {
         throw new ConflictException('This transit job has already been claimed by another driver.');
       }
 
+      const tripPrice = Number(trip.route.price);
+
       return {
         jobType: 'EVENT_TRANSIT',
         job: {
@@ -154,11 +182,12 @@ export class RiderJobsService {
           departureTime: trip.departureTime,
           arrivalTime: trip.arrivalTime,
           status: trip.status,
+          payout: tripPrice,
           route: {
             routeId: trip.route.id,
             originCity: trip.route.originCity,
             destination: trip.route.destination,
-            price: Number(trip.route.price),
+            price: tripPrice,
             pickupPoints: trip.route.pickupPoints,
           },
           event: trip.route.event,
@@ -220,12 +249,11 @@ export class RiderJobsService {
   }
 
   /**
-   * Rider Accepts Job (Handles both parcel shipments and event transit jobs seamlessly)
+   * Rider Accepts Job
    */
   async acceptJob(jobId: string, riderUserId: string) {
     const rider = await this.getActiveRider(riderUserId, true);
 
-    // If bus/van driver, accept event transit job
     if (rider.activeVehicle?.type === VehicleType.BUS || rider.activeVehicle?.type === VehicleType.VAN) {
       if (!rider.activeVehicleId) {
         throw new ForbiddenException('You must have an active vehicle assigned to your profile before accepting transit jobs.');
@@ -241,7 +269,7 @@ export class RiderJobsService {
           throw new ConflictException('This transit job is no longer available or has already been taken.');
         }
 
-        const claimedTrip = await tx.eventTrip.update({
+        return await tx.eventTrip.update({
           where: { id: jobId },
           data: {
             driverId: rider.id,
@@ -253,8 +281,6 @@ export class RiderJobsService {
             driver: { include: { user: true } },
           },
         });
-
-        return claimedTrip;
       });
 
       return {

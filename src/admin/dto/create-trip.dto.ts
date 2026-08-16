@@ -1,5 +1,6 @@
-import { IsString, IsNotEmpty, IsDateString, IsEnum, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsDateString, IsEnum, IsOptional, IsNumber, ValidateNested, IsArray } from 'class-validator';
 import { TripLeg } from '@prisma/client';
+import { Type } from 'class-transformer';
 
 export class CreateTripDto {
   @IsString()
@@ -23,4 +24,33 @@ export class CreateTripDto {
   @IsDateString()
   @IsOptional()
   arrivalTime?: string;
+}
+
+class PickupCoordDto {
+  @IsString()
+  id!: string;
+
+  @IsOptional()
+  @IsNumber()
+  latitude?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  longitude?: number | null;
+}
+
+export class UpdateRouteCoordinatesDto {
+  @IsOptional()
+  @IsNumber()
+  destinationLat?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  destinationLng?: number | null;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PickupCoordDto)
+  pickupPoints?: PickupCoordDto[];
 }

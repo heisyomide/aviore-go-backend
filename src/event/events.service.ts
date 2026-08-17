@@ -306,6 +306,56 @@ async bookEventTrip(customerId: string, dto: CreateBookingDto) {
     };
   }
 
+  // src/event/events.service.ts
+
+async getActiveEventTripDetails(tripId: string) {
+  const trip = await this.prisma.eventTrip.findUnique({
+    where: { id: tripId },
+    include: {
+      route: {
+        include: {
+          event: true,       // Moved here under route
+          pickupPoints: true,
+        },
+      },
+      bookings: {
+        include: {
+          customer: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phoneNumber: true,
+            },
+          },
+          pickupPoint: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+      vehicle: true,
+      driver: {
+        include: {
+          user: {
+            select: {
+              firstName: true,
+              lastName: true,
+              phoneNumber: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!trip) {
+    throw new NotFoundException(`Event trip with ID ${tripId} not found`);
+  }
+
+  return trip;
+}
+
   async getTripManifest(tripId: string) {
     const trip = await this.prisma.eventTrip.findUnique({
       where: { id: tripId },

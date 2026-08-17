@@ -6,50 +6,92 @@ export class RiderEarningsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * Helper: Get West Africa Time (WAT, UTC+1) bounds for a target date
+   */
+  private getLocalDayBounds(targetDate: Date = new Date()) {
+    // Shift the timestamp by +1 hour for WAT (UTC+1) offset calculation
+    const watTimeOffset = 1 * 60 * 60 * 1000;
+    const localCurrent = new Date(targetDate.getTime() + watTimeOffset);
+
+    const startOfLocalDay = new Date(localCurrent);
+    startOfLocalDay.setUTCHours(0, 0, 0, 0);
+
+    const endOfLocalDay = new Date(localCurrent);
+    endOfLocalDay.setUTCHours(23, 59, 59, 999);
+
+    return {
+      startOfDay: new Date(startOfLocalDay.getTime() - watTimeOffset),
+      endOfDay: new Date(endOfLocalDay.getTime() - watTimeOffset),
+    };
+  }
+
+  /**
+   * Helper: Get West Africa Time (WAT, UTC+1) current week bounds (Monday to Sunday)
+   */
+  private getLocalWeekBounds() {
+    const watTimeOffset = 1 * 60 * 60 * 1000;
+    const localNow = new Date(Date.now() + watTimeOffset);
+    const dayOfWeek = localNow.getUTCDay(); // 0 is Sun, 1 is Mon...
+    const distanceToMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+    const startOfLocalWeek = new Date(localNow);
+    startOfLocalWeek.setUTCDate(localNow.getUTCDate() - distanceToMon);
+    startOfLocalWeek.setUTCHours(0, 0, 0, 0);
+
+    const endOfLocalWeek = new Date(startOfLocalWeek);
+    endOfLocalWeek.setUTCDate(startOfLocalWeek.getUTCDate() + 6);
+    endOfLocalWeek.setUTCHours(23, 59, 59, 999);
+
+    return {
+      startOfWeek: new Date(startOfLocalWeek.getTime() - watTimeOffset),
+      endOfWeek: new Date(endOfLocalWeek.getTime() - watTimeOffset),
+    };
+  }
+
+  /**
    * Get Rider Daily Earnings Summary & Target Motivation
    */
   async getDailySummary(riderUserId: string, dailyTarget = 20000) {
     const wallet = await this.prisma.wallet.findUnique({
       where: { userId: riderUserId },
+      select: { id: true, availableBalance: true },
     });
 
     if (!wallet) {
       throw new NotFoundException('Rider wallet not found.');
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    const { startOfDay, endOfDay } = this.getLocalDayBounds();
 
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    // 1. Fetch Today's Earnings from Ledger
-    const todayTransactions = await this.prisma.transaction.findMany({
-      where: {
-        walletId: wallet.id,
-        type: 'CREDIT',
-        category: 'RIDER_EARNINGS',
-        createdAt: {
-          gte: startOfDay,
-          lte: endOfDay,
+    // Fetch aggregated earnings and transaction count concurrently using database indexes
+    const [aggregation, todayTripsCount] = await Promise.all([
+      this.prisma.transaction.aggregate({
+        where: {
+          walletId: wallet.id,
+          type: 'CREDIT',
+          category: 'RIDER_EARNINGS',
+          createdAt: { gte: startOfDay, lte: endOfDay },
         },
-      },
-    });
+        _sum: { amount: true },
+      }),
+      this.prisma.transaction.count({
+        where: {
+          walletId: wallet.id,
+          type: 'CREDIT',
+          category: 'RIDER_EARNINGS',
+          createdAt: { gte: startOfDay, lte: endOfDay },
+        },
+      }),
+    ]);
 
-    const todayEarnings = todayTransactions.reduce(
-      (sum, item) => sum + Number(item.amount),
-      0,
-    );
-    const todayTripsCount = todayTransactions.length;
-
-    // 2. Progress toward target
+    const todayEarnings = Number(aggregation._sum.amount ?? 0);
     const progressPercentage = Math.min(
       100,
       Math.round((todayEarnings / dailyTarget) * 100),
     );
     const remainingToTarget = Math.max(0, dailyTarget - todayEarnings);
 
-    // 3. Dynamic Motivational Message
+    // Dynamic Motivational Message
     let promptMessage = '';
     if (todayEarnings === 0) {
       promptMessage = `Ready to start today's hustle? Complete deliveries to reach your ₦${dailyTarget.toLocaleString()} target!`;
@@ -73,60 +115,62 @@ export class RiderEarningsService {
   /**
    * Full Earnings Dashboard with Weekly Breakdown Chart & History
    */
-  async getDashboard(riderUserId: string) {
-    const rider = await this.prisma.riderProfile.findUnique({
-      where: { userId: riderUserId },
-    });
+async getDashboard(riderUserId: string) {
+    const [rider, existingWallet] = await Promise.all([
+      this.prisma.riderProfile.findUnique({
+        where: { userId: riderUserId },
+        select: { id: true },
+      }),
+      this.prisma.wallet.findUnique({
+        where: { userId: riderUserId },
+        select: { id: true, availableBalance: true },
+      }),
+    ]);
 
     if (!rider) {
       throw new NotFoundException('Rider profile not found.');
     }
 
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { userId: riderUserId },
-    });
-
+    // Defensive Auto-Provisioning: Fixes missing wallets instantly on-the-fly
+let wallet = existingWallet;
     if (!wallet) {
-      throw new NotFoundException('Rider wallet not found.');
+      wallet = await this.prisma.wallet.create({
+        data: {
+          userId: riderUserId,
+          availableBalance: 0,
+        },
+        select: { id: true, availableBalance: true },
+      });
     }
 
-    // Get Start and End of Current Week (Monday to Sunday)
-    const now = new Date();
-    const dayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon...
-    const distanceToMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const { startOfWeek, endOfWeek } = this.getLocalWeekBounds();
 
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - distanceToMon);
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-
-    // Fetch transactions for the current week
-    const transactions = await this.prisma.transaction.findMany({
-      where: {
-        walletId: wallet.id,
-        type: 'CREDIT',
-        category: 'RIDER_EARNINGS',
-        createdAt: {
-          gte: startOfWeek,
-          lte: endOfWeek,
+    // Fetch weekly transactions and completed trips count in parallel
+    const [transactions, completedTrips] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: {
+          walletId: wallet.id,
+          type: 'CREDIT',
+          category: 'RIDER_EARNINGS',
+          createdAt: { gte: startOfWeek, lte: endOfWeek },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const completedTrips = await this.prisma.shipment.count({
-      where: {
-        riderId: rider.id,
-        status: 'DELIVERED',
-        deliveredAt: {
-          gte: startOfWeek,
-          lte: endOfWeek,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          amount: true,
+          referenceCode: true,
+          description: true,
+          createdAt: true,
         },
-      },
-    });
+      }),
+      this.prisma.shipment.count({
+        where: {
+          riderId: rider.id,
+          status: 'DELIVERED',
+          deliveredAt: { gte: startOfWeek, lte: endOfWeek },
+        },
+      }),
+    ]);
 
     const weekGross = transactions.reduce(
       (sum, item) => sum + Number(item.amount),
@@ -140,8 +184,11 @@ export class RiderEarningsService {
     const chartData = daysMap.map((day) => ({ day, amount: 0 }));
 
     transactions.forEach((tx) => {
-      const txDayIndex = tx.createdAt.getDay();
-      // Map JS Sunday(0) to Index 6, Monday(1) to Index 0...
+      // Adjust Day Index evaluation based on WAT offset
+      const watTimeOffset = 1 * 60 * 60 * 1000;
+      const localTxDate = new Date(tx.createdAt.getTime() + watTimeOffset);
+      const txDayIndex = localTxDate.getUTCDay();
+      
       const mappedIndex = txDayIndex === 0 ? 6 : txDayIndex - 1;
       chartData[mappedIndex].amount += Number(tx.amount);
     });
@@ -155,7 +202,6 @@ export class RiderEarningsService {
       status: 'SETTLED' as const,
     }));
 
-    // Attach Daily Target Prompt
     const dailySummary = await this.getDailySummary(riderUserId);
 
     return {
@@ -173,11 +219,12 @@ export class RiderEarningsService {
   }
 
   /**
-   * Earnings History
+   * Earnings History with optional pagination
    */
-  async getHistory(riderUserId: string) {
+  async getHistory(riderUserId: string, limit = 50, offset = 0) {
     const wallet = await this.prisma.wallet.findUnique({
       where: { userId: riderUserId },
+      select: { id: true },
     });
 
     if (!wallet) {
@@ -191,6 +238,17 @@ export class RiderEarningsService {
         category: 'RIDER_EARNINGS',
       },
       orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+      select: {
+        id: true,
+        referenceCode: true,
+        amount: true,
+        description: true,
+        createdAt: true,
+        type: true,
+        category: true,
+      },
     });
 
     return history.map((item) => ({

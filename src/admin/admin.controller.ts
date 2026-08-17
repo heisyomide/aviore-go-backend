@@ -101,7 +101,7 @@ export class AdminController {
     });
   }
 
-  @Patch('riders/kyc/:applicationId/evaluate')
+@Patch('riders/kyc/:applicationId/evaluate')
   async evaluateRiderKYC(
     @Param('applicationId') appId: string,
     @Body('approve') approve: boolean,
@@ -110,8 +110,12 @@ export class AdminController {
   ) {
     const result = await this.prisma.$transaction(async (tx) => {
       const app = await tx.riderApplication.findUnique({ where: { id: appId } });
-      if (!app || app.status !== RiderApplicationStatus.SUBMITTED) {
+      if (!app) {
         throw new BadRequestException('Target application record is unavailable for review.');
+      }
+
+      if (app.status === RiderApplicationStatus.APPROVED && approve) {
+        throw new BadRequestException('This application has already been approved.');
       }
 
       // 1. REJECTION FLOW
@@ -150,45 +154,41 @@ export class AdminController {
         targetUser = await tx.user.findUnique({ where: { id: app.userId } });
       }
 
-      if (!targetUser) {
-        const searchConditions: Prisma.UserWhereInput[] = [];
-
-        if (app.email) {
-          searchConditions.push({
-            email: { equals: app.email.trim(), mode: 'insensitive' },
-          });
-        }
-
-        if ((app as any).phoneNumber || (app as any).phone) {
-          searchConditions.push({
-            phoneNumber: (app as any).phoneNumber || (app as any).phone,
-          });
-        }
-
-        if (searchConditions.length > 0) {
-          targetUser = await tx.user.findFirst({
-            where: { OR: searchConditions },
-          });
-        }
+      if (!targetUser && app.email) {
+        targetUser = await tx.user.findFirst({
+          where: { email: { equals: app.email.trim(), mode: 'insensitive' } },
+        });
       }
 
-      // 3. AUTO-CREATE USER IF STILL NOT FOUND
+      // 3. AUTO-CREATE OR UPDATE USER SAFELY
       if (!targetUser) {
         const userEmail = app.email ? app.email.trim().toLowerCase() : `rider_${app.id}@aviore.com`;
         const userPhone =
           (app as any).phoneNumber || (app as any).phone || `0000000000_${app.id.substring(0, 5)}`;
 
-        targetUser = await tx.user.create({
-          data: {
-            firstName: app.firstName || 'Rider',
-            lastName: app.lastName || 'Operator',
-            email: userEmail,
-            phoneNumber: userPhone,
-            passwordHash: 'KYC_APPROVED_EXTERNAL_AUTH',
-            role: 'RIDER' as any,
-            status: IdentityStatus.VERIFIED,
-          },
-        });
+        try {
+          targetUser = await tx.user.create({
+            data: {
+              firstName: app.firstName || 'Rider',
+              lastName: app.lastName || 'Operator',
+              email: userEmail,
+              phoneNumber: userPhone,
+              passwordHash: 'KYC_APPROVED_EXTERNAL_AUTH',
+              role: 'RIDER' as any,
+              status: IdentityStatus.VERIFIED,
+            },
+          });
+        } catch (e) {
+          targetUser = await tx.user.findFirst({
+            where: { OR: [{ email: userEmail }, { phoneNumber: userPhone }] },
+          });
+          if (!targetUser) throw e;
+
+          targetUser = await tx.user.update({
+            where: { id: targetUser.id },
+            data: { status: IdentityStatus.VERIFIED },
+          });
+        }
       } else {
         targetUser = await tx.user.update({
           where: { id: targetUser.id },
@@ -207,8 +207,8 @@ export class AdminController {
         },
       });
 
-      // 5. UPSERT RIDER PROFILE
-      await tx.riderProfile.upsert({
+      // 5. UPSERT RIDER PROFILE FIRST (Guarantees we have a valid RiderProfile ID)
+      const riderProfile = await tx.riderProfile.upsert({
         where: { userId: targetUser.id },
         update: {
           nin: app.idNumber || undefined,
@@ -226,6 +226,47 @@ export class AdminController {
           accountName: app.accountName || '',
         },
       });
+
+      // 6. CREATE OR UPDATE VEHICLE RECORD (USING RIDER PROFILE ID FOR ownerId)
+      let activeVehicleId: string | undefined = undefined;
+      const vehicleTypeVal = app.vehicleType;
+      const plateNumberVal = app.plateNumber || `AVR-${Math.floor(1000 + Math.random() * 9000)}`;
+
+      if (vehicleTypeVal) {
+        const vehicleData = {
+          ownerId: riderProfile.id, // ✅ Correctly references RiderProfile.id
+          type: vehicleTypeVal,
+          make: app.vehicleBrand || 'Unknown',
+          model: app.vehicleModel || 'Unknown',
+          year: app.vehicleYear ? Number(app.vehicleYear) : null,
+          color: app.vehicleColor || null,
+          plateNumber: plateNumberVal,
+          isVerified: true,
+        };
+
+        const existingVehicle = await tx.vehicle.findFirst({
+          where: { plateNumber: plateNumberVal },
+        });
+
+        if (existingVehicle) {
+          const updatedVehicle = await tx.vehicle.update({
+            where: { id: existingVehicle.id },
+            data: vehicleData,
+          });
+          activeVehicleId = updatedVehicle.id;
+        } else {
+          const newVehicle = await tx.vehicle.create({
+            data: vehicleData,
+          });
+          activeVehicleId = newVehicle.id;
+        }
+
+        // Link active vehicle back to the rider profile
+        await tx.riderProfile.update({
+          where: { id: riderProfile.id },
+          data: { activeVehicleId },
+        });
+      }
 
       return { app: updatedApp, user: targetUser, approved: true };
     });
@@ -245,6 +286,41 @@ export class AdminController {
     }
 
     return result.app;
+  }
+
+  @Patch('riders/:riderId/status')
+  async updateRiderStatus(
+    @Param('riderId') riderId: string,
+    @Body('action') action: 'SUSPEND' | 'APPROVE' | 'BAN',
+    @Body('reason') reason?: string,
+  ) {
+    // Default to VERIFIED
+    let targetStatus: IdentityStatus = IdentityStatus.VERIFIED;
+
+    if (action === 'SUSPEND' || action === 'BAN') {
+      targetStatus = IdentityStatus.SUSPENDED; // Map BAN to SUSPENDED since BANNED doesn't exist in enum
+    } else if (action === 'APPROVE') {
+      targetStatus = IdentityStatus.VERIFIED;
+    }
+
+    const riderProfile = await this.prisma.riderProfile.findFirst({
+      where: { OR: [{ id: riderId }, { userId: riderId }] },
+    });
+
+    if (!riderProfile) {
+      throw new NotFoundException('Rider profile not found.');
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: riderProfile.userId },
+      data: { status: targetStatus },
+    });
+
+    return {
+      success: true,
+      message: `Rider successfully marked as ${action}`,
+      status: updatedUser.status,
+    };
   }
 
   /**

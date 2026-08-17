@@ -10,11 +10,13 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
+import { EventRiderJobsService } from './EventRiderJobsService';
 
 @Controller('events')
 export class EventsController {
   constructor(
     private readonly eventsService: EventsService,
+    private readonly eventRiderJobsService: EventRiderJobsService,
     private readonly dashboardService: DashboardService,
   ) {}
 
@@ -184,6 +186,13 @@ async joinWaitlist(
     return this.eventsService.getOrganizerSettings(user.userId);
   }
 
+  // In events.controller.ts
+@Get('trips/:tripId/active-details')
+@UseGuards(JwtAuthGuard)
+async getActiveTripDetails(@Param('tripId') tripId: string) {
+  return await this.eventsService.getActiveEventTripDetails(tripId);
+}
+
   @Patch('organizer/settings')
   @UseGuards(JwtAuthGuard)
   async updateOrganizerSettings(
@@ -201,9 +210,19 @@ async joinWaitlist(
   async getEventVehicles(@Param('eventId') eventId: string) {
     return await this.eventsService.getEventVehiclesAndDrivers(eventId);
   }
-
+  @Post('trips/:tripId/accept')
+  @UseGuards(JwtAuthGuard) // Make sure authentication guard is protecting it so req.user exists!
+  async acceptEventTrip(
+    @Param('tripId') tripId: string,
+    @Req() req: any,
+  ) {
+    const userId = req.user.id;
+    return await this.eventRiderJobsService.acceptEventTrip(tripId, userId);
+  }
   @Get(':id')
   async getEventById(@Param('id') id: string) {
     return this.eventsService.getEventById(id);
   }
+
+
 }

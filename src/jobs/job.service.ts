@@ -49,7 +49,7 @@ export class RiderJobsService {
    */
 async getAvailableJobs(userId: string) {
     const rider = await this.getActiveRider(userId, true);
-    const vehicleType = rider.activeVehicle?.type;
+    const vehicleType = rider?.activeVehicle?.type;
 
     const isBusOrVan = 
       vehicleType === VehicleType.BUS || 
@@ -59,11 +59,11 @@ async getAvailableJobs(userId: string) {
       return this.fetchEventTransitJobs();
     }
 
-    return this.fetchParcelShipmentJobs();
+    return this.fetchStandardDeliveryShipments();
   }
 
   /**
-   * Fetch available bus/van event transit jobs
+   * Fetch available bus/van event transit jobs from the EventTrip tables
    */
   private async fetchEventTransitJobs() {
     const availableTrips = await this.prisma.eventTrip.findMany({
@@ -84,96 +84,100 @@ async getAvailableJobs(userId: string) {
       take: 20,
     });
 
+    const jobs = availableTrips.map((trip) => {
+      const payout = Number(trip.route?.price ?? 0);
+      const event = trip.route?.event;
+
+      return {
+        tripId: trip.id,
+        tripLeg: trip.tripLeg,
+        departureTime: trip.departureTime,
+        arrivalTime: trip.arrivalTime,
+        payout,
+        route: {
+          routeId: trip.route?.id,
+          originCity: trip.route?.originCity,
+          destination: trip.route?.destination,
+          price: payout,
+        },
+        event: event ? {
+          eventId: event.id,
+          title: event.title,
+          venue: event.venue,
+          city: event.city,
+          state: event.state,
+          startDate: event.startDate,
+          endDate: event.endDate,
+          bannerUrl: event.bannerUrl,
+        } : null,
+        pickupPoints: trip.route?.pickupPoints ?? [],
+      };
+    });
+
     return {
       jobType: 'EVENT_TRANSIT',
-      jobs: availableTrips.map((trip) => {
-        const tripPrice = Number(trip.route.price);
-        return {
-          tripId: trip.id,
-          tripLeg: trip.tripLeg,
-          departureTime: trip.departureTime,
-          arrivalTime: trip.arrivalTime,
-          payout: tripPrice,
-          route: {
-            routeId: trip.route.id,
-            originCity: trip.route.originCity,
-            destination: trip.route.destination,
-            price: tripPrice,
-          },
-          event: {
-            eventId: trip.route.event.id,
-            title: trip.route.event.title,
-            venue: trip.route.event.venue,
-            city: trip.route.event.city,
-            state: trip.route.event.state,
-            startDate: trip.route.event.startDate,
-            endDate: trip.route.event.endDate,
-            bannerUrl: trip.route.event.bannerUrl,
-          },
-          pickupPoints: trip.route.pickupPoints,
-        };
-      }),
+      jobs,
     };
   }
 
   /**
-   * Fetch standard parcel delivery jobs for bikes and cars
+   * Fetch all standard delivery jobs (Parcel, Food, Grocery, Pharmacy, Document) for bikes/cars
    */
-  private async fetchParcelShipmentJobs() {
+  private async fetchStandardDeliveryShipments() {
     const shipments = await this.prisma.shipment.findMany({
       where: {
         status: 'PENDING',
         riderId: null,
+        deliveryType: {
+          in: ['PARCEL', 'FOOD', 'GROCERY', 'PHARMACY', 'DOCUMENT'],
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
 
+    const jobs = shipments.map((shipment) => {
+      const totalPrice = Number(shipment.totalPrice ?? 0);
+      const riderShare = Number(shipment.riderShare ?? totalPrice);
+
+      return {
+        ...shipment,
+        totalPrice,
+        riderShare,
+        payout: riderShare,
+      };
+    });
+
     return {
       jobType: 'PARCEL_DELIVERY',
-      jobs: shipments.map((shipment) => {
-        const payoutAmount = Number(shipment.riderShare ?? shipment.totalPrice ?? 0);
-        return {
-          ...shipment,
-          totalPrice: Number(shipment.totalPrice),
-          riderShare: payoutAmount,
-          payout: payoutAmount, // Ensures frontend pricing fallback picks up a valid number
-        };
-      }),
+      jobs,
     };
   }
-
   /**
    * Get a single job (Handles both parcel shipments and event transit jobs)
    */
   async getJobDetails(jobId: string, riderUserId: string) {
     const rider = await this.getActiveRider(riderUserId);
 
-    if (rider.activeVehicle?.type === VehicleType.BUS || rider.activeVehicle?.type === VehicleType.VAN) {
-      const trip = await this.prisma.eventTrip.findUnique({
-        where: { id: jobId },
-        include: {
-          route: {
-            include: {
-              event: {
-                include: { organizer: true },
-              },
-              pickupPoints: true,
-            },
+    // 1. Try finding it as an EventTrip first
+    const trip = await this.prisma.eventTrip.findUnique({
+      where: { id: jobId },
+      include: {
+        route: {
+          include: {
+            event: { include: { organizer: true } },
+            pickupPoints: true,
           },
         },
-      });
+      },
+    });
 
-      if (!trip) {
-        throw new NotFoundException('Event transit job not found.');
-      }
-
+    if (trip) {
       if (trip.driverId !== null && trip.driverId !== rider.id) {
         throw new ConflictException('This transit job has already been claimed by another driver.');
       }
 
       const tripPrice = Number(trip.route.price);
-
       return {
         jobType: 'EVENT_TRANSIT',
         job: {
@@ -195,18 +199,20 @@ async getAvailableJobs(userId: string) {
       };
     }
 
-    // Standard parcel shipment job details
+    // 2. Fallback to standard parcel shipment job details
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: jobId },
     });
 
-    if (!shipment) throw new NotFoundException('Shipment not found.');
+    if (!shipment) {
+      throw new NotFoundException('Job not found.');
+    }
 
     const canView =
       shipment.status === ShipmentStatus.PENDING ||
       shipment.riderId === rider.id;
 
-    if (!canView) throw new NotFoundException('Shipment not found.');
+    if (!canView) throw new NotFoundException('Job not found.');
 
     return {
       jobType: 'PARCEL_DELIVERY',
@@ -223,11 +229,6 @@ async getAvailableJobs(userId: string) {
         totalPrice: Number(shipment.totalPrice),
         riderShare: Number(shipment.riderShare),
         verificationPin: shipment.verificationPin,
-        isExpress: shipment.isExpress,
-        isFragile: shipment.isFragile,
-        waterproof: shipment.waterproof,
-        keepUpright: shipment.keepUpright,
-        handleWithCare: shipment.handleWithCare,
         recipient: {
           name: shipment.recipient,
           phoneNumber: shipment.recipientPhone,
@@ -236,13 +237,11 @@ async getAvailableJobs(userId: string) {
           address: shipment.pickupAddress,
           latitude: shipment.pickupLat,
           longitude: shipment.pickupLng,
-          placeId: shipment.pickupPlaceId,
         },
         destination: {
           address: shipment.destinationAddress,
           latitude: shipment.destinationLat,
           longitude: shipment.destinationLng,
-          placeId: shipment.destinationPlaceId,
         },
       },
     };
@@ -592,5 +591,111 @@ async getAvailableJobs(userId: string) {
       success: true,
       message: 'Delivery completed successfully.',
     };
+  }
+
+  /**
+   * Dedicated endpoint for bus/van/car riders to browse scheduled event transit jobs
+   */
+async getEventTransitJobsForDriver(userId: string) {
+    console.log('==================================================');
+    console.log(`[EventJobsService] 🚀 Starting getEventTransitJobsForDriver for userId: ${userId}`);
+
+    try {
+      const rider = await this.getActiveRider(userId, true);
+      const vehicleType = rider?.activeVehicle?.type;
+      
+      console.log(`[EventJobsService] Evaluated vehicleType: '${vehicleType ?? 'None found'}'`);
+
+      const isEligible = 
+        vehicleType === VehicleType.BUS || 
+        vehicleType === VehicleType.VAN || 
+        vehicleType === VehicleType.CAR;
+
+      if (!isEligible) {
+        console.warn(`[EventJobsService] ⛔ Access Denied. Vehicle type '${vehicleType}' is not authorized for event transit.`);
+        return {
+          success: false,
+          message: 'Event transit jobs are only available for Bus, Van, or Car vehicle profiles.',
+          jobs: [],
+        };
+      }
+
+      const totalTripsInDb = await this.prisma.eventTrip.count();
+      console.log(`[EventJobsService] 📊 Total EventTrips records in database: ${totalTripsInDb}`);
+
+      // Diagnostic sample to inspect why filters might return empty sets
+      const rawSample = await this.prisma.eventTrip.findFirst();
+      console.log('[EventJobsService DEBUG] Sample EventTrip record fields:', {
+        driverId: rawSample?.driverId,
+        isPublished: rawSample?.isPublished,
+        status: rawSample?.status,
+      });
+
+      // Flexible query handling nullable/unassigned drivers and enum matching
+      const availableTrips = await this.prisma.eventTrip.findMany({
+        where: {
+          OR: [
+            { driverId: null },
+            { driverId: '' },
+          ],
+          
+          status: 'SCHEDULED' as any,
+        },
+        include: {
+          route: {
+            include: {
+              event: true,
+              pickupPoints: true,
+            },
+          },
+        },
+        orderBy: { departureTime: 'asc' },
+        take: 20,
+      });
+
+      console.log(`[EventJobsService] 🔍 Query complete. Found matching trips count: ${availableTrips.length}`);
+
+      const jobs = availableTrips.map((trip) => {
+        const payout = Number(trip.route?.price ?? 0);
+        const event = trip.route?.event;
+
+        return {
+          tripId: trip.id,
+          tripLeg: trip.tripLeg,
+          departureTime: trip.departureTime,
+          arrivalTime: trip.arrivalTime,
+          payout,
+          route: {
+            routeId: trip.route?.id,
+            originCity: trip.route?.originCity,
+            destination: trip.route?.destination,
+            price: payout,
+          },
+          event: event ? {
+            eventId: event.id,
+            title: event.title,
+            venue: event.venue,
+            city: event.city,
+            state: event.state,
+            startDate: event.startDate,
+            endDate: event.endDate,
+            bannerUrl: event.bannerUrl,
+          } : null,
+          pickupPoints: trip.route?.pickupPoints ?? [],
+        };
+      });
+
+      console.log(`[EventJobsService] ✨ Successfully mapped ${jobs.length} event jobs.`);
+      console.log('==================================================');
+
+      return {
+        jobType: 'EVENT_TRANSIT',
+        jobs,
+      };
+
+    } catch (dbError) {
+      console.error('[EventJobsService] ❌ Database query failed inside getEventTransitJobsForDriver:', dbError);
+      throw dbError;
+    }
   }
 }

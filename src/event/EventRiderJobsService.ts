@@ -114,4 +114,32 @@ export class EventRiderJobsService {
       };
     });
   }
+
+  // jobs.service.ts (Backend)
+async getAcceptedEventTrips(riderId: string) {
+  return this.prisma.eventTrip.findMany({
+   where: {
+      driver: {
+        userId: riderId, // Or 'id: riderId' depending on whether riderId is the User ID or Driver Profile ID
+      },
+      status: {
+        in: ['BOARDING', 'IN_TRANSIT'],
+      },
+    },
+    include: {
+      // Include route and nest event inside it to avoid duplicate keys
+      route: {
+        include: {
+          event: true,
+        },
+      },
+      _count: {
+        select: { bookings: true },
+      },
+    },
+    orderBy: {
+      departureTime: 'asc',
+    },
+  });
+}
 }

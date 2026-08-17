@@ -224,5 +224,12 @@ async getActiveTripDetails(@Param('tripId') tripId: string) {
     return this.eventsService.getEventById(id);
   }
 
-
+  
+@Get('trips/accepted')
+  @UseGuards(JwtAuthGuard)
+  async getAcceptedEventTrips(@Req() req: any) {
+    // Safely extract user ID depending on how your JWT strategy populates the request object
+    const userId = req.user?.id || req.user?.userId;
+    return await this.eventRiderJobsService.getAcceptedEventTrips(userId);
+  }
 }

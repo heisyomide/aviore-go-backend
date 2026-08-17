@@ -811,9 +811,12 @@ model EventOrganizerProfile {
   id               String   @id @default(uuid())
   userId           String   @unique
   organizationName String
+  category         String?  // e.g., Music, Tech, Nightlife, Corporate
+  city             String?  // e.g., Lagos
+  instagramHandle  String?  // e.g., @aviorevents
   supportEmail     String?
   supportPhone     String?
-  logoUrl          String?
+  logoUrl          String   // Now required
   isVerified       Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

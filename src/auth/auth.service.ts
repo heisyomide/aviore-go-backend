@@ -129,6 +129,69 @@ export class AuthService {
     };
   }
 
+
+  async registerOrganizer(dto: {
+    email: string;
+    password: string;
+    firstName?: string;
+    lastName?: string;
+    phoneNumber?: string;
+  }) {
+    const emailFormatted = dto.email.toLowerCase().trim();
+
+    // Check if user already exists
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: emailFormatted },
+    });
+
+    if (existingUser) {
+      throw new BadRequestException('An account with this email already exists.');
+    }
+
+    // Hash the user's password
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const emailToken = crypto.randomUUID();
+
+    // Handle phone number cleanly: Only use PENDING_ if phone number is completely omitted
+    const cleanPhone =
+      dto.phoneNumber && dto.phoneNumber.trim().length > 0
+        ? dto.phoneNumber.trim()
+        : `PENDING_${emailToken}`;
+
+    // Create User with ORGANIZER role and PENDING_VERIFICATION status
+    const newUser = await this.prisma.user.create({
+      data: {
+        email: emailFormatted,
+        phoneNumber: cleanPhone,
+        passwordHash,
+        role: 'ORGANIZER',
+        status: IdentityStatus.PENDING_VERIFICATION,
+        emailVerificationToken: emailToken,
+        firstName: dto.firstName?.trim() || '',
+        lastName: dto.lastName?.trim() || '',
+      },
+    });
+
+    // Construct verification link
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const confirmLink = `${frontendUrl}/confirm-email?token=${emailToken}`;
+
+    // Send confirmation email
+    await this.notificationService.dispatch({
+      type: NotificationType.ACCOUNT_WELCOME,
+      userId: newUser.id,
+      email: newUser.email,
+      title: 'Confirm your Aviorè organizer email address',
+      body: 'Welcome to Aviorè! Please confirm your email address to verify your account and proceed to your organization setup.',
+      data: {
+        url: confirmLink,
+        actionText: 'Confirm Your Email',
+      },
+    });
+
+    return { message: 'Registration successful! Please check your email to confirm your account.' };
+  }
+
   async validateUser(email: string, passwordRaw: string) {
     console.log('[DEBUG AUTH] Incoming payload parameters:', { email, passwordRaw });
 

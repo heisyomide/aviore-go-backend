@@ -15,11 +15,12 @@ async createEvent(userId: string, dto: CreateEventDto) {
     where: { userId },
   });
 
-  if (!organizer) {
+if (!organizer) {
     organizer = await this.prisma.eventOrganizerProfile.create({
       data: {
         userId,
         organizationName: 'Independent Organizer',
+        logoUrl: 'https://via.placeholder.com/150', // 👈 Required by database schema fallback
       },
     });
   }
@@ -616,7 +617,6 @@ async getOrganizerReports(userId: string, range: string) {
 }
 // In your service file
 async getOrganizerSettings(userId: string) {
-  // Fetch user details alongside their organizer profile
   const user = await this.prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -636,10 +636,21 @@ async getOrganizerSettings(userId: string) {
 
   if (!user) return null;
 
-  // Flatten the response so the frontend receives a clean object
+  // 1. Helper: Clean email to produce a readable name (e.g., "jeffburnhill237" -> "Jeff")
+  const formatEmailAsName = (email: string) => {
+    const username = email.split('@')[0];
+    // Remove numbers and capitalize first letter
+    const cleaned = username.replace(/[0-9]/g, '');
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  };
+
   return {
-    firstName: user.firstName,
-    lastName: user.lastName,
+    // 2. Only use the fallback if firstName is empty
+    firstName: user.firstName && user.firstName.trim() !== '' 
+      ? user.firstName 
+      : formatEmailAsName(user.email || 'User'),
+    
+    lastName: user.lastName || '',
     email: user.email,
     companyName: user.organizerProfile?.organizationName || '',
     supportEmail: user.organizerProfile?.supportEmail || '',
@@ -650,7 +661,14 @@ async getOrganizerSettings(userId: string) {
 
 async updateOrganizerSettings(
   userId: string,
-  dto: { firstName?: string; lastName?: string; phone?: string; companyName?: string; supportEmail?: string }
+  dto: { 
+    firstName?: string; 
+    lastName?: string; 
+    phone?: string; 
+    companyName?: string; 
+    supportEmail?: string;
+    logoUrl?: string; // 👈 Added so logo updates work from settings too
+  }
 ) {
   // 1. Update user personal details
   await this.prisma.user.update({
@@ -668,12 +686,14 @@ async updateOrganizerSettings(
       organizationName: dto.companyName,
       supportPhone: dto.phone,
       supportEmail: dto.supportEmail,
+      ...(dto.logoUrl && { logoUrl: dto.logoUrl }), // Only update logo if a new one is provided
     },
     create: {
       userId,
       organizationName: dto.companyName || 'My Organization',
       supportPhone: dto.phone,
       supportEmail: dto.supportEmail,
+      logoUrl: dto.logoUrl || 'https://via.placeholder.com/150',
     },
   });
 

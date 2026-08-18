@@ -128,29 +128,37 @@ async getAvailableEventTrips(userId: string) {
 
   // jobs.service.ts (Backend)
 async getAcceptedEventTrips(riderId: string) {
-  return this.prisma.eventTrip.findMany({
-   where: {
-      driver: {
-        userId: riderId, // Or 'id: riderId' depending on whether riderId is the User ID or Driver Profile ID
-      },
-      status: {
-        in: ['BOARDING', 'IN_TRANSIT'],
-      },
-    },
-    include: {
-      // Include route and nest event inside it to avoid duplicate keys
-      route: {
-        include: {
-          event: true,
+    const trips = await this.prisma.eventTrip.findMany({
+      where: {
+        driver: {
+          userId: riderId, // Adjust to 'id: riderId' if riderId points directly to the Driver profile
+        },
+        status: {
+          in: ['BOARDING', 'IN_TRANSIT'],
         },
       },
-      _count: {
-        select: { bookings: true },
+      include: {
+        route: {
+          include: {
+            event: true,
+          },
+        },
+        _count: {
+          select: { bookings: true },
+        },
       },
-    },
-    orderBy: {
-      departureTime: 'asc',
-    },
-  });
-}
+      orderBy: {
+        departureTime: 'asc',
+      },
+    });
+
+    // Map the payout property safely to match what your frontend expects
+    return trips.map((trip) => {
+      const tripAny = trip as any;
+      return {
+        ...trip,
+        payout: tripAny.driverPayout ?? tripAny.payout ?? 0,
+      };
+    });
+  }
 }

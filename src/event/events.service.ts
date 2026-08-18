@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { CreateEventDto } from './dto/create-event.dto';
   import { CreateTripDto } from '../admin/dto/create-trip.dto'; 
@@ -77,7 +77,7 @@ if (!organizer) {
   }
 }
 
-  async getAllEvents() {
+async getAllEvents() {
     return this.prisma.event.findMany({
       where: { status: 'PUBLISHED' },
       include: {
@@ -85,6 +85,11 @@ if (!organizer) {
         routes: {
           include: {
             pickupPoints: true,
+            trips: {
+              include: {
+                vehicle: true,
+              },
+            },
           },
         },
       },
@@ -261,52 +266,65 @@ async bookEventTrip(customerId: string, dto: CreateBookingDto) {
 
 // Add this inside your EventsService class:
 
-  async verifyAndCheckInPassenger(dto: CheckInDto) {
-    // 1. Find the booking using the unique QR token
-    const booking = await this.prisma.eventBooking.findUnique({
-      where: { qrToken: dto.qrToken },
-      include: {
-        customer: true,
-        event: true,
-        pickupPoint: true,
-        trip: true,
-      },
-    });
+async verifyAndCheckInPassenger(dto: CheckInDto) {
+  console.log('>>> [DEBUG] Incoming CheckInDto:', dto);
 
-    if (!booking) {
-      throw new NotFoundException('Invalid ticket or QR token not found');
-    }
+  // 1. Find the booking
+  const booking = await this.prisma.eventBooking.findFirst({
+    where: {
+      OR: [
+        { qrToken: dto.qrToken },
+        { id: dto.qrToken },
+      ],
+    },
+    include: {
+      customer: true,
+      pickupPoint: true,
+      trip: true,
+    },
+  });
 
-    // 2. Check if already checked in or boarded
-    if (booking.boardingStatus === BoardingStatus.BOARDED || booking.boardingStatus === BoardingStatus.CHECKED_IN) {
-      return {
-        message: 'Passenger is already checked in!',
-        status: booking.boardingStatus,
-        booking,
-      };
-    }
+  console.log('>>> [DEBUG] Found booking result:', booking ? booking.id : 'NOT FOUND');
 
-    // 3. Update boarding status to CHECKED_IN
-    const updatedBooking = await this.prisma.eventBooking.update({
-      where: { id: booking.id },
-      data: {
-        boardingStatus: BoardingStatus.CHECKED_IN,
-        checkedInAt: new Date(),
-      },
-      include: {
-        customer: true,
-        pickupPoint: true,
-        trip: true,
-      },
-    });
+  if (!booking) {
+    throw new NotFoundException('Invalid ticket, QR token, or booking ID not found');
+  }
 
+  // 2. Validate trip ID if provided
+  console.log('>>> [DEBUG] Comparing tripIds -> DTO tripId:', dto.tripId, '| Booking tripId:', booking.tripId);
+  if (dto.tripId && booking.tripId && booking.tripId !== dto.tripId) {
+    throw new BadRequestException('This ticket is valid for a different trip route.');
+  }
+
+  if (booking.boardingStatus === 'CHECKED_IN' || booking.boardingStatus === 'BOARDED') {
+    console.log('>>> [DEBUG] Passenger already checked in.');
     return {
-      message: 'Check-in successful! Welcome aboard.',
-      status: updatedBooking.boardingStatus,
-      booking: updatedBooking,
+      message: 'Passenger is already checked in!',
+      status: booking.boardingStatus,
+      booking,
     };
   }
 
+  const updatedBooking = await this.prisma.eventBooking.update({
+    where: { id: booking.id },
+    data: {
+      boardingStatus: 'CHECKED_IN',
+      checkedInAt: new Date(),
+    },
+    include: {
+      customer: true,
+      pickupPoint: true,
+      trip: true,
+    },
+  });
+
+  console.log('>>> [DEBUG] Check-in successful for booking:', updatedBooking.id);
+  return {
+    message: 'Check-in successful! Welcome aboard.',
+    status: updatedBooking.boardingStatus,
+    booking: updatedBooking,
+  };
+}
   // src/event/events.service.ts
 
 async getActiveEventTripDetails(tripId: string) {
@@ -706,6 +724,17 @@ async updateOrganizerSettings(
 // src/event/events.service.ts
 
 async joinWaitlist(userId: string, dto: { eventId: string; routeId: string; pickupPointId?: string }) {
+  // 1. Verify if the route has active trips published. If trips exist, prevent joining the waitlist.
+  const route = await this.prisma.eventRoute.findUnique({
+    where: { id: dto.routeId },
+    include: { trips: true },
+  });
+
+  if (route && route.trips && route.trips.length > 0) {
+    throw new Error('Schedules for this route have already been published. Please proceed with booking your trip directly.');
+  }
+
+  // 2. Proceed with upserting the waitlist matching the existing Prisma schema fields
   return await this.prisma.routeWaitlist.upsert({
     where: {
       routeId_userId: {

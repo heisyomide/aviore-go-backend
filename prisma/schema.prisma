@@ -502,7 +502,8 @@ model SupportTicket {
 
 model Payment {
   id              String        @id @default(cuid())
-  shipmentId      String
+  shipmentId      String?       // Now optional
+  bookingId       String?       // Added for event bookings
   customerId      String
   gateway         String
   txRef           String        @unique
@@ -515,8 +516,10 @@ model Payment {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   customer        User          @relation(fields: [customerId], references: [id])
-  shipment        Shipment      @relation(fields: [shipmentId], references: [id])
+  shipment        Shipment?     @relation(fields: [shipmentId], references: [id])
+  booking         EventBooking? @relation(fields: [bookingId], references: [id])
 }
+
 
 model Withdrawal {
   id String @id @default(cuid())
@@ -961,13 +964,15 @@ model EventBooking {
   checkedInAt    DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+  
+  payments       Payment[]      
+  eventPayments  EventPayment[] // <--- Add this line to satisfy EventPayment's relation
 
-  event       Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  customer    User          @relation("CustomerEventBookings", fields: [customerId], references: [id], onDelete: Cascade)
-  route       EventRoute    @relation(fields: [routeId], references: [id], onDelete: Cascade)
-  pickupPoint PickupPoint   @relation(fields: [pickupPointId], references: [id], onDelete: Cascade)
-  trip        EventTrip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
-  payments    EventPayment[]
+  event          Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  customer       User           @relation("CustomerEventBookings", fields: [customerId], references: [id], onDelete: Cascade)
+  route          EventRoute     @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  pickupPoint    PickupPoint    @relation(fields: [pickupPointId], references: [id], onDelete: Cascade)
+  trip           EventTrip      @relation(fields: [tripId], references: [id], onDelete: Cascade)
 
   @@index([customerId])
   @@index([eventId])

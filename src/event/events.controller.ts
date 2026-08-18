@@ -71,12 +71,13 @@ export class EventsController {
   // 4. CHECK-IN & MANIFEST ROUTES
   // ==========================================
 
-  @Post('check-in')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.ORGANIZER, UserRole.RIDER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
-  async checkInPassenger(@Body() checkInDto: CheckInDto) {
-    return this.eventsService.verifyAndCheckInPassenger(checkInDto);
-  }
+ @Post('check-in')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ORGANIZER, UserRole.RIDER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+async checkInPassenger(@Req() req: any, @Body() checkInDto: CheckInDto) {
+  console.log('USER MAKING CHECK-IN:', req.user);
+  return this.eventsService.verifyAndCheckInPassenger(checkInDto);
+}
 
   @Get('trips/:tripId/manifest')
   @UseGuards(JwtAuthGuard, RolesGuard)

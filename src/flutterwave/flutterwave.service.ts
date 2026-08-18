@@ -98,6 +98,60 @@ export class FlutterwaveService {
     }
   }
 
+  private async handleVerifiedEventBooking(data: {
+    eventId: string;
+    routeId: string;
+    pickupPointId: string;
+    tripId: string;
+    amountPaid: number;
+    txRef: string;
+    flutterwaveTxId: string;
+    flutterwaveRef: string;
+    customerEmail?: string;
+  }) {
+    const customer = data.customerEmail
+      ? await this.prisma.user.findUnique({ where: { email: data.customerEmail } })
+      : null;
+
+    if (!customer) {
+      throw new BadRequestException('Customer user record not found for verified booking.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Create the event booking using correct schema fields
+      const booking = await tx.eventBooking.create({
+        data: {
+          eventId: data.eventId,
+          routeId: data.routeId,
+          pickupPointId: data.pickupPointId,
+          tripId: data.tripId,
+          customerId: customer.id,
+          amountPaid: data.amountPaid,
+          paymentStatus: PaymentStatus.SUCCESS,
+          boardingStatus: BoardingStatus.NOT_CHECKED_IN,
+        },
+      });
+
+      // 2. Record the successful payment linked to the customer
+      const paymentData: any = {
+        txRef: data.txRef,
+        flutterwaveTxId: data.flutterwaveTxId,
+        flutterwaveRef: data.flutterwaveRef,
+        amount: data.amountPaid,
+        status: PaymentStatus.SUCCESS,
+        customerId: customer.id,
+      };
+
+      await tx.payment.create({
+        data: paymentData,
+      });
+
+      return booking;
+    });
+
+    this.logger.log(`[EVENT_BOOKING_SUCCESS] Successfully verified and created booking for route ${data.routeId}`);
+  }
+
   private async handleSuccessfulBookingPayment(bookingId: string, amountPaid: number) {
     if (!bookingId) return;
 
@@ -134,8 +188,15 @@ export class FlutterwaveService {
     }
   }
 
-  async initializePayment(dto: InitializePaymentDto & { bookingId?: string }) {
-    const { shipmentId, bookingId, email, name, redirectUrl } = dto;
+async initializePayment(dto: InitializePaymentDto & { 
+    bookingId?: string; 
+    eventId?: string; 
+    routeId?: string; 
+    pickupPointId?: string; 
+    tripId?: string; 
+    amount?: number 
+  }) {
+    const { shipmentId, bookingId, eventId, routeId, pickupPointId, tripId, amount, email, name, redirectUrl } = dto;
 
     let rawTotal = 0;
     let customerId: string | null = null;
@@ -143,9 +204,7 @@ export class FlutterwaveService {
     let metaPayload: any = {};
 
     if (shipmentId) {
-      const shipment = await this.prisma.shipment.findUnique({
-        where: { id: shipmentId },
-      });
+      const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
       if (!shipment) throw new NotFoundException('SHIPMENT_NOT_FOUND');
       
       rawTotal = Number(shipment.totalPrice);
@@ -153,18 +212,31 @@ export class FlutterwaveService {
       description = `Payment for Shipment #${shipment.id.slice(-6).toUpperCase()}`;
       metaPayload = { shipmentId: shipment.id };
     } else if (bookingId) {
-      const booking = await this.prisma.eventBooking.findUnique({
-        where: { id: bookingId },
-        include: { event: true },
-      });
+      const booking = await this.prisma.eventBooking.findUnique({ where: { id: bookingId } });
       if (!booking) throw new NotFoundException('BOOKING_NOT_FOUND');
 
       rawTotal = Number(booking.amountPaid || 0);
       customerId = booking.customerId;
       description = `Payment for Transit Booking #${booking.id.slice(-6).toUpperCase()}`;
       metaPayload = { bookingId: booking.id };
+    } else if (eventId && routeId && tripId) {
+      const route = await this.prisma.eventRoute.findUnique({ where: { id: routeId } });
+      if (!route) throw new NotFoundException('ROUTE_NOT_FOUND');
+
+      rawTotal = Number(amount || route.price);
+      description = `Payment for Event Transit Booking`;
+      
+      // Store info securely in meta. We will create the actual booking ONLY upon verification success.
+      metaPayload = {
+        type: 'EVENT_BOOKING',
+        eventId,
+        routeId,
+        pickupPointId: pickupPointId || '',
+        tripId,
+        amountPaid: rawTotal,
+      };
     } else {
-      throw new BadRequestException('Either shipmentId or bookingId must be provided');
+      throw new BadRequestException('Invalid payment parameters provided');
     }
 
     if (!rawTotal || rawTotal <= 0) {
@@ -172,10 +244,7 @@ export class FlutterwaveService {
     }
 
     const txRef = `AVR-${randomUUID()}`;
-    const frontendUrl =
-      this.config.get<string>('FRONTEND_URL') ||
-      process.env.FRONTEND_URL ||
-      'http://localhost:3000';
+    const frontendUrl = this.config.get<string>('FRONTEND_URL') || process.env.FRONTEND_URL || 'http://localhost:3000';
     const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
 
     const payload = {
@@ -195,42 +264,22 @@ export class FlutterwaveService {
     };
 
     try {
-      const response = await axios.post(
-        'https://api.flutterwave.com/v3/payments',
-        payload,
-        { headers: this.headers },
-      );
-
+      const response = await axios.post('https://api.flutterwave.com/v3/payments', payload, { headers: this.headers });
       const paymentLink = response.data?.data?.link;
-      if (!paymentLink) {
-        throw new Error('PAYMENT_LINK_NOT_GENERATED');
-      }
+      if (!paymentLink) throw new Error('PAYMENT_LINK_NOT_GENERATED');
 
-      if (shipmentId && customerId) {
-        await this.prisma.payment.create({
-          data: {
-            shipmentId: shipmentId,
-            customerId: customerId,
-            txRef: txRef,
-            amount: rawTotal,
-            currency: 'NGN',
-            gateway: 'FLUTTERWAVE',
-            status: PaymentStatus.PENDING,
-          },
-        });
-      }
+      // NOTICE: We do NOT create a payment record or booking record in the database here anymore!
+      // This prevents ghost records if the user cancels or abandons payment.
 
       return { link: paymentLink };
     } catch (error: any) {
       const flwErrorMessage = error.response?.data?.message || error.message;
       this.logger.error(`PAYMENT_INIT_ERROR: ${flwErrorMessage}`);
-      throw new InternalServerErrorException(
-        `PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`,
-      );
+      throw new InternalServerErrorException(`PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`);
     }
   }
 
-  async verifyPayment(transactionId: string) {
+ async verifyPayment(transactionId: string) {
     try {
       const response = await firstValueFrom(
         this.http.get(
@@ -244,6 +293,12 @@ export class FlutterwaveService {
       const meta = paymentData.meta || {};
       const shipmentId = meta.shipmentId;
       const bookingId = meta.bookingId;
+
+      // Extract event transit metadata from the new checkout flow
+      const eventId = meta.eventId;
+      const routeId = meta.routeId;
+      const pickupPointId = meta.pickupPointId;
+      const tripId = meta.tripId;
 
       if (shipmentId) {
         const existingPayment = await this.prisma.payment.findUnique({
@@ -296,7 +351,21 @@ export class FlutterwaveService {
           }
         }
       } else if (bookingId && isSuccessful) {
+        // Legacy flow where bookingId was pre-created
         await this.handleSuccessfulBookingPayment(bookingId, Number(paymentData.amount));
+      } else if (eventId && routeId && tripId && isSuccessful) {
+        // New secure flow: Create booking & payment record upon verified success
+        await this.handleVerifiedEventBooking({
+          eventId,
+          routeId,
+          pickupPointId,
+          tripId,
+          amountPaid: Number(paymentData.amount),
+          txRef: paymentData.tx_ref,
+          flutterwaveTxId: String(paymentData.id),
+          flutterwaveRef: paymentData.flw_ref,
+          customerEmail: paymentData.customer?.email,
+        });
       }
 
       return paymentData;

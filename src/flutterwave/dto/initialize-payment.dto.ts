@@ -7,8 +7,29 @@ import {
 } from 'class-validator';
 
 export class InitializePaymentDto {
+  @IsOptional()
   @IsString()
-  shipmentId!: string;
+  shipmentId?: string;
+
+  @IsOptional()
+  @IsString()
+  bookingId?: string;
+
+  @IsOptional()
+  @IsString()
+  eventId?: string;
+
+  @IsOptional()
+  @IsString()
+  routeId?: string;
+
+  @IsOptional()
+  @IsString()
+  pickupPointId?: string;
+
+  @IsOptional()
+  @IsString()
+  tripId?: string;
 
   @IsEmail()
   email!: string;

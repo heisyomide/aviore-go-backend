@@ -1,15 +1,28 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { CreateEventDto } from './dto/create-event.dto';
   import { CreateTripDto } from '../admin/dto/create-trip.dto'; 
    import { CreateBookingDto } from './dto/create-booking.dto'; 
     import { CheckInDto } from './dto/check-in.dto';
-import { BoardingStatus } from '@prisma/client';
+import { BoardingStatus, TripStatus, TripLeg } from '@prisma/client';
+
 
 @Injectable()
 export class EventsService {
   constructor(private prisma: PrismaService) {}
 private readonly logger = new Logger(EventsService.name);
+
+private readonly stateTransitions: Record<TripStatus, TripStatus[]> = {
+    [TripStatus.SCHEDULED]: [TripStatus.BOARDING],
+    [TripStatus.BOARDING]: [TripStatus.IN_TRANSIT],
+    [TripStatus.IN_TRANSIT]: [TripStatus.ARRIVED],
+    [TripStatus.ARRIVED]: [TripStatus.COMPLETED],
+    [TripStatus.COMPLETED]: [],
+    [TripStatus.CANCELLED]: [],
+  };
+
+
+
 async createEvent(userId: string, dto: CreateEventDto) {
   let organizer = await this.prisma.eventOrganizerProfile.findUnique({
     where: { userId },
@@ -266,115 +279,176 @@ async bookEventTrip(customerId: string, dto: CreateBookingDto) {
 
 
 // Add this inside your EventsService class:
+async advanceTripState(
+    tripId: string, 
+    userId: string, // Auth user ID from JWT guard
+    nextStatus: TripStatus,
+  ) {
+    // 1. Resolve the RiderProfile linked to this user
+    const riderProfile = await this.prisma.riderProfile.findUnique({
+      where: { userId },
+    });
 
-async verifyAndCheckInPassenger(dto: CheckInDto) {
-  console.log('>>> [DEBUG] Incoming CheckInDto:', dto);
+    if (!riderProfile) {
+      throw new ForbiddenException('USER_IS_NOT_REGISTERED_AS_RIDER');
+    }
 
-  // 1. Find the booking
-  const booking = await this.prisma.eventBooking.findFirst({
-    where: {
-      OR: [
-        { qrToken: dto.qrToken },
-        { id: dto.qrToken },
-      ],
-    },
-    include: {
-      customer: true,
-      pickupPoint: true,
-      trip: true,
-    },
-  });
+    // 2. Fetch trip details and verify assignment
+    const trip = await this.prisma.eventTrip.findUnique({
+      where: { id: tripId },
+      include: { bookings: true, route: true },
+    });
 
-  console.log('>>> [DEBUG] Found booking result:', booking ? booking.id : 'NOT FOUND');
+    if (!trip) throw new NotFoundException('EVENT_TRIP_NOT_FOUND');
+    if (trip.driverId !== riderProfile.id) {
+      throw new ForbiddenException('UNAUTHORIZED_RIDER_TRIP_ACCESS');
+    }
 
-  if (!booking) {
-    throw new NotFoundException('Invalid ticket, QR token, or booking ID not found');
+    // 3. Validate state machine rule
+    const allowedNextStates = this.stateTransitions[trip.status] || [];
+    if (!allowedNextStates.includes(nextStatus)) {
+      throw new BadRequestException(`Invalid state transition from ${trip.status} to ${nextStatus}`);
+    }
+
+    // 4. Update trip status atomically
+    const updatedTrip = await this.prisma.eventTrip.update({
+      where: { id: tripId },
+      data: {
+        status: nextStatus,
+        arrivalTime: nextStatus === TripStatus.ARRIVED ? new Date() : trip.arrivalTime,
+      },
+      include: {
+        route: {
+          include: { pickupPoints: true },
+        },
+        bookings: {
+          include: { customer: true },
+        },
+      },
+    });
+
+    this.logger.log(`[TRIP_STATE_ADVANCED] Trip ${tripId} moved to ${nextStatus} by rider profile ${riderProfile.id}`);
+    return updatedTrip;
   }
 
-  // 2. Validate trip ID if provided
-  console.log('>>> [DEBUG] Comparing tripIds -> DTO tripId:', dto.tripId, '| Booking tripId:', booking.tripId);
-  if (dto.tripId && booking.tripId && booking.tripId !== dto.tripId) {
-    throw new BadRequestException('This ticket is valid for a different trip route.');
-  }
+  /**
+   * Scans and checks in a passenger via QR Token during the BOARDING state
+   */
+  async verifyAndCheckInPassenger(dto: CheckInDto) {
+    console.log('>>> [DEBUG] Incoming CheckInDto:', dto);
 
-  if (booking.boardingStatus === 'CHECKED_IN' || booking.boardingStatus === 'BOARDED') {
-    console.log('>>> [DEBUG] Passenger already checked in.');
+    // 1. Find the booking
+    const booking = await this.prisma.eventBooking.findFirst({
+      where: {
+        OR: [
+          { qrToken: dto.qrToken },
+          { id: dto.qrToken },
+        ],
+      },
+      include: {
+        customer: true,
+        pickupPoint: true,
+        trip: true,
+      },
+    });
+
+    console.log('>>> [DEBUG] Found booking result:', booking ? booking.id : 'NOT FOUND');
+
+    if (!booking) {
+      throw new NotFoundException('Invalid ticket, QR token, or booking ID not found');
+    }
+
+    // 2. Validate trip ID if provided
+    console.log('>>> [DEBUG] Comparing tripIds -> DTO tripId:', dto.tripId, '| Booking tripId:', booking.tripId);
+    if (dto.tripId && booking.tripId && booking.tripId !== dto.tripId) {
+      throw new BadRequestException('This ticket is valid for a different trip route.');
+    }
+
+    if (booking.boardingStatus === 'CHECKED_IN' || booking.boardingStatus === 'BOARDED') {
+      console.log('>>> [DEBUG] Passenger already checked in.');
+      return {
+        message: 'Passenger is already checked in!',
+        status: booking.boardingStatus,
+        booking,
+      };
+    }
+
+    const updatedBooking = await this.prisma.eventBooking.update({
+      where: { id: booking.id },
+      data: {
+        boardingStatus: 'CHECKED_IN',
+        checkedInAt: new Date(),
+      },
+      include: {
+        customer: true,
+        pickupPoint: true,
+        trip: true,
+      },
+    });
+
+    console.log('>>> [DEBUG] Check-in successful for booking:', updatedBooking.id);
     return {
-      message: 'Passenger is already checked in!',
-      status: booking.boardingStatus,
-      booking,
+      message: 'Check-in successful! Welcome aboard.',
+      status: updatedBooking.boardingStatus,
+      booking: updatedBooking,
     };
   }
 
-  const updatedBooking = await this.prisma.eventBooking.update({
-    where: { id: booking.id },
-    data: {
-      boardingStatus: 'CHECKED_IN',
-      checkedInAt: new Date(),
-    },
-    include: {
-      customer: true,
-      pickupPoint: true,
-      trip: true,
-    },
-  });
-
-  console.log('>>> [DEBUG] Check-in successful for booking:', updatedBooking.id);
-  return {
-    message: 'Check-in successful! Welcome aboard.',
-    status: updatedBooking.boardingStatus,
-    booking: updatedBooking,
-  };
-}
-  // src/event/events.service.ts
-
+  /**
+   * Retrieves active event trip diagnostics, route metadata, and passengers manifest
+   */
 async getActiveEventTripDetails(tripId: string) {
-  const trip = await this.prisma.eventTrip.findUnique({
-    where: { id: tripId },
-    include: {
-      route: {
-        include: {
-          event: true,       // Moved here under route
-          pickupPoints: true,
-        },
-      },
-      bookings: {
-        include: {
-          customer: {
-            select: {
-              firstName: true,
-              lastName: true,
-              phoneNumber: true,
-            },
-          },
-          pickupPoint: {
-            select: {
-              name: true,
-            },
+    const trip = await this.prisma.eventTrip.findUnique({
+      where: { id: tripId },
+      include: {
+        route: {
+          include: {
+            event: true,
+            pickupPoints: true,
           },
         },
-      },
-      vehicle: true,
-      driver: {
-        include: {
-          user: {
-            select: {
-              firstName: true,
-              lastName: true,
-              phoneNumber: true,
+        bookings: {
+          include: {
+            customer: {
+              select: {
+                firstName: true,
+                lastName: true,
+                phoneNumber: true,
+              },
+            },
+            pickupPoint: {
+              select: {
+                name: true,
+              },
             },
           },
         },
+        vehicle: true,
+        driver: {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                phoneNumber: true,
+              },
+            },
+          },
+        },
       },
-    },
-  });
+    });
 
-  if (!trip) {
-    throw new NotFoundException(`Event trip with ID ${tripId} not found`);
+    if (!trip) {
+      throw new NotFoundException(`Event trip with ID ${tripId} not found`);
+    }
+
+    const tripAny = trip as any;
+
+    return {
+      ...trip,
+      payout: tripAny.driverPayout ?? tripAny.payout ?? 0,
+    };
   }
-
-  return trip;
-}
 
   async getTripManifest(tripId: string) {
     const trip = await this.prisma.eventTrip.findUnique({

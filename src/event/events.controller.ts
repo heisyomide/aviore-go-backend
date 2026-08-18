@@ -102,10 +102,10 @@ async joinWaitlist(
   // 5. ORGANIZER DASHBOARD & MANAGEMENT ROUTES
   // ==========================================
 
-  @Get('organizer')
+ @Get('organizer/active-trips')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ORGANIZER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
-  async findAllByOrganizer(@Req() req) {
+  async findOrganizerActiveTrips(@Req() req) {
     const userId = req.user.id;
     const organizer = await this.eventsService['prisma'].eventOrganizerProfile.findUnique({
       where: { userId },
@@ -115,48 +115,136 @@ async joinWaitlist(
       return [];
     }
 
-    return this.eventsService['prisma'].event.findMany({
-      where: { organizerId: organizer.id },
+    // Find all trips belonging to routes owned by this organizer's events
+    return this.eventsService['prisma'].eventTrip.findMany({
+      where: {
+        route: {
+          event: {
+            organizerId: organizer.id,
+          },
+        },
+      },
       include: {
-        routes: {
+        route: {
           include: {
+            event: {
+              select: {
+                id: true,
+                title: true,
+                venue: true,
+                city: true,
+                state: true,
+                startDate: true,
+                endDate: true,
+              },
+            },
             pickupPoints: true,
-            trips: {
-              include: {
-                vehicle: {
-                  select: {
-                    id: true,
-                    make: true,
-                    model: true,
-                    type: true,
-                    plateNumber: true,
-                    color: true,
-                    year: true,
-                    isVerified: true,
-                  },
-                },
-                driver: {
-                  include: {
-                    user: {
-                      select: {
-                        firstName: true,
-                        lastName: true,
-                        phoneNumber: true,
-                        avatarUrl: true,
-                      },
-                    },
-                  },
-                },
+          },
+        },
+        vehicle: {
+          select: {
+            id: true,
+            make: true,
+            model: true,
+            type: true,
+            plateNumber: true,
+            color: true,
+            year: true,
+            isVerified: true,
+          },
+        },
+        driver: {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                phoneNumber: true,
+                avatarUrl: true,
               },
             },
           },
         },
-        _count: {
-          select: { bookings: true },
+        bookings: {
+          include: {
+            customer: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phoneNumber: true,
+              },
+            },
+          },
         },
       },
-      orderBy: { startDate: 'desc' },
+      orderBy: { createdAt: 'desc' },
     });
+  }
+
+  // Individual Active Trip endpoint matching organizerTripsService.getActiveEventTripDetails(tripId)
+  @Get('organizer/trips/:tripId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ORGANIZER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  async findOrganizerTripDetails(@Req() req, @Param('tripId') tripId: string) {
+    const userId = req.user.id;
+    const organizer = await this.eventsService['prisma'].eventOrganizerProfile.findUnique({
+      where: { userId },
+    });
+
+    if (!organizer) {
+      throw new NotFoundException('Organizer profile not found');
+    }
+
+    const trip = await this.eventsService['prisma'].eventTrip.findFirst({
+      where: {
+        id: tripId,
+        route: {
+          event: {
+            organizerId: organizer.id,
+          },
+        },
+      },
+      include: {
+        route: {
+          include: {
+            event: true,
+            pickupPoints: true,
+          },
+        },
+        vehicle: true,
+        driver: {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                phoneNumber: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
+        bookings: {
+          include: {
+            customer: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phoneNumber: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!trip) {
+      throw new NotFoundException('Trip not found or unauthorized');
+    }
+
+    return trip;
   }
 
   @Get('dashboard/overview')

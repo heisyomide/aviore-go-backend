@@ -90,6 +90,7 @@ async getAcceptedUnscheduledEvents() {
 }
   
   // 3. Admin schedules a trip (Creates job slots for drivers to see in Available Jobs with isPublished: false)
+ // 3. Admin schedules a trip with commercial pricing and driver payout configurations
   async scheduleTrip(dto: CreateTripDto) {
     const route = await this.prisma.eventRoute.findUnique({
       where: { id: dto.routeId },
@@ -100,17 +101,20 @@ async getAcceptedUnscheduledEvents() {
       throw new NotFoundException('Event route not found');
     }
 
-    // Create the trip schedule slot for drivers (isPublished defaults to false)
+    // Create the trip schedule slot with pricing and payout data
     const trip = await this.prisma.eventTrip.create({
       data: {
         routeId: dto.routeId,
         vehicleId: dto.vehicleId || null,
-        driverId: dto.driverId || null, // Can be assigned later when driver accepts from available jobs
+        driverId: dto.driverId || null,
         tripLeg: dto.tripLeg || 'OUTBOUND',
         departureTime: new Date(dto.departureTime),
         arrivalTime: dto.arrivalTime ? new Date(dto.arrivalTime) : null,
+        customerOneWayFare: dto.customerOneWayFare,
+        customerRoundTripFare: dto.customerRoundTripFare,
+        driverPayout: dto.driverPayout,
         status: 'SCHEDULED',
-        isPublished: false, // Hidden from customers/organizers until manually pushed live later
+        isPublished: false,
       },
       include: {
         route: { include: { event: true } },
@@ -122,7 +126,7 @@ async getAcceptedUnscheduledEvents() {
     return trip;
   }
 
-  // 4. Admin publishes the trip live for attendees and organizers to see and book seats
+  // 4. Admin publishes the trip live after verifying assets and fares
   async publishTripLive(tripId: string) {
     const trip = await this.prisma.eventTrip.findUnique({
       where: { id: tripId },
@@ -141,9 +145,13 @@ async getAcceptedUnscheduledEvents() {
       throw new NotFoundException('Trip schedule not found');
     }
 
-    // Ensure a driver and vehicle are locked in before publishing live to the public
+    // Ensure a driver, vehicle, and commercial fares are locked in before publishing live
     if (!trip.driverId || !trip.vehicleId) {
       throw new BadRequestException('Cannot publish trip live: A driver and vehicle must be assigned first.');
+    }
+
+    if (!trip.customerOneWayFare || !trip.customerRoundTripFare || !trip.driverPayout) {
+      throw new BadRequestException('Cannot publish trip live: Commercial fares and driver payouts must be fully configured.');
     }
 
     // Update trip to published status

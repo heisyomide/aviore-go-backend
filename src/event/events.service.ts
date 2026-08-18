@@ -127,7 +127,7 @@ async getAllEvents() {
 
 // Add this inside your EventsService class:
 
-  async scheduleTrip(dto: CreateTripDto) {
+async scheduleTrip(dto: CreateTripDto) {
     // 1. Verify that the route exists
     const route = await this.prisma.eventRoute.findUnique({
       where: { id: dto.routeId },
@@ -137,7 +137,7 @@ async getAllEvents() {
       throw new NotFoundException('Event route not found');
     }
 
-    // 2. Create the trip
+    // 2. Create the trip with commercial fares and driver payout
     return this.prisma.eventTrip.create({
       data: {
         routeId: dto.routeId,
@@ -146,6 +146,9 @@ async getAllEvents() {
         tripLeg: dto.tripLeg,
         departureTime: new Date(dto.departureTime),
         arrivalTime: dto.arrivalTime ? new Date(dto.arrivalTime) : null,
+        customerOneWayFare: dto.customerOneWayFare,
+        customerRoundTripFare: dto.customerRoundTripFare,
+        driverPayout: dto.driverPayout,
         status: 'SCHEDULED',
       },
       include: {
@@ -155,8 +158,6 @@ async getAllEvents() {
       },
     });
   }
-
-
 
 // Add this inside your EventsService class:
 

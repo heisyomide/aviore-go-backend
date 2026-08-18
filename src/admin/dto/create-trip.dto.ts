@@ -24,6 +24,18 @@ export class CreateTripDto {
   @IsDateString()
   @IsOptional()
   arrivalTime?: string;
+
+  @IsNumber()
+  @IsNotEmpty()
+  customerOneWayFare!: number;
+
+  @IsNumber()
+  @IsNotEmpty()
+  customerRoundTripFare!: number;
+
+  @IsNumber()
+  @IsNotEmpty()
+  driverPayout!: number;
 }
 
 class PickupCoordDto {
@@ -47,6 +59,18 @@ export class UpdateRouteCoordinatesDto {
   @IsOptional()
   @IsNumber()
   destinationLng?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  customerOneWayFare?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  customerRoundTripFare?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  driverPayout?: number | null;
 
   @IsOptional()
   @IsArray()

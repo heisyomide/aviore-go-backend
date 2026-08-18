@@ -41,7 +41,7 @@ export class EventRiderJobsService {
   /**
    * Get available event transit jobs for bus/van drivers
    */
-  async getAvailableEventTrips(userId: string) {
+async getAvailableEventTrips(userId: string) {
     await this.getActiveEventDriver(userId);
 
     const trips = await this.prisma.eventTrip.findMany({
@@ -65,24 +65,35 @@ export class EventRiderJobsService {
     });
 
     return trips.map((trip) => ({
-      id: trip.id,
+      tripId: trip.id, // Fixed: match frontend EventJob interface property name
       tripLeg: trip.tripLeg,
       departureTime: trip.departureTime,
+      arrivalTime: (trip as any).arrivalTime || trip.departureTime,
       event: {
+        eventId: (trip.route.event as any).id || '',
         title: trip.route.event.title,
         venue: trip.route.event.venue,
-        date: trip.route.event.startDate,
+        city: (trip.route.event as any).city || '',
+        state: (trip.route.event as any).state || '',
+        startDate: trip.route.event.startDate ? new Date(trip.route.event.startDate).toISOString() : '',
+        endDate: (trip.route.event as any).endDate ? new Date((trip.route.event as any).endDate).toISOString() : '',
         bannerUrl: trip.route.event.bannerUrl,
       },
       route: {
-        origin: trip.route.originCity,
+        routeId: trip.route.id,
+        originCity: trip.route.originCity,
         destination: trip.route.destination,
         price: Number(trip.route.price),
+      },
+      driverPayout: trip.driverPayout !== null && trip.driverPayout !== undefined ? Number(trip.driverPayout) : 0,
+      payout: {
+        driverPayout: trip.driverPayout !== null && trip.driverPayout !== undefined ? Number(trip.driverPayout) : Number((trip.route as any).driverPayout || 0),
+        customerOneWayFare: trip.customerOneWayFare !== null && trip.customerOneWayFare !== undefined ? Number(trip.customerOneWayFare) : Number(trip.route.price || 0),
+        customerRoundTripFare: trip.customerRoundTripFare !== null && trip.customerRoundTripFare !== undefined ? Number(trip.customerRoundTripFare) : Number((trip.route as any).customerRoundTripFare || 0),
       },
       pickupPoints: trip.route.pickupPoints,
     }));
   }
-
   /**
    * Event Driver Accepts a Trip
    */

@@ -31,6 +31,10 @@ export class InitializePaymentDto {
   @IsString()
   tripId?: string;
 
+  @IsOptional()
+  @IsString()
+  tripType?: string; // <--- ADDED THIS PROPERTY
+
   @IsEmail()
   email!: string;
 

@@ -655,8 +655,12 @@ async getEventTransitJobsForDriver(userId: string) {
 
       console.log(`[EventJobsService] 🔍 Query complete. Found matching trips count: ${availableTrips.length}`);
 
-      const jobs = availableTrips.map((trip) => {
-        const payout = Number(trip.route?.price ?? 0);
+ const jobs = availableTrips.map((trip) => {
+        // Use trip.driverPayout if present, otherwise fallback to route price
+        const driverPayoutAmount = trip.driverPayout !== null && trip.driverPayout !== undefined 
+          ? Number(trip.driverPayout) 
+          : Number(trip.route?.price ?? 0);
+
         const event = trip.route?.event;
 
         return {
@@ -664,12 +668,18 @@ async getEventTransitJobsForDriver(userId: string) {
           tripLeg: trip.tripLeg,
           departureTime: trip.departureTime,
           arrivalTime: trip.arrivalTime,
-          payout,
+          // Provide structured payout object to match your frontend expectations
+          payout: {
+            driverPayout: driverPayoutAmount,
+            customerOneWayFare: Number(trip.customerOneWayFare ?? trip.route?.price ?? 0),
+            customerRoundTripFare: Number(trip.customerRoundTripFare ?? 0),
+          },
+          driverPayout: driverPayoutAmount, // Root level fallback if needed
           route: {
             routeId: trip.route?.id,
             originCity: trip.route?.originCity,
             destination: trip.route?.destination,
-            price: payout,
+            price: Number(trip.route?.price ?? 0),
           },
           event: event ? {
             eventId: event.id,

@@ -9,20 +9,22 @@ import {
   Post,
   Query,
   Req,
+  UseGuards,
 } from '@nestjs/common';
-import { FlutterwaveService , } from './flutterwave.service';
+import { FlutterwaveService } from './flutterwave.service';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { TransferDto } from './dto/transfer.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // Adjust path to your JWT auth guard
 
 @Controller('flutterwave')
 export class FlutterwaveController {
-  constructor(
-    private readonly flutterwaveService: FlutterwaveService,
-  ) {}
+  constructor(private readonly flutterwaveService: FlutterwaveService) {}
 
   @Post('initialize')
-  initialize(@Body() dto: InitializePaymentDto) {
-    return this.flutterwaveService.initializePayment(dto);
+  @UseGuards(JwtAuthGuard) // <--- Protect endpoint and parse user context
+  initialize(@Body() dto: InitializePaymentDto, @Req() req: any) {
+    const userId = req.user?.id || req.user?.userId;
+    return this.flutterwaveService.initializePayment(dto, userId);
   }
 
   @Get('verify/:transactionId')
@@ -30,10 +32,10 @@ export class FlutterwaveController {
     return this.flutterwaveService.verifyPayment(transactionId);
   }
 
-@Post('withdraw')
+  @Post('withdraw')
+  @UseGuards(JwtAuthGuard)
   withdraw(@Req() req: any, @Body() dto: TransferDto) {
-    // Extract userId from Auth Guard / User context
-    const userId = req.user?.id || dto.riderId;
+    const userId = req.user?.id || req.user?.userId || dto.riderId;
     return this.flutterwaveService.requestWithdrawal(userId, dto.amount);
   }
 
@@ -50,10 +52,6 @@ export class FlutterwaveController {
     return this.flutterwaveService.resolveAccount(bankCode, accountNumber);
   }
 
-  /**
-   * Flutterwave Webhook Listener
-   * Configure URL in Flutterwave Dashboard: https://your-domain.com/flutterwave/webhook
-   */
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(

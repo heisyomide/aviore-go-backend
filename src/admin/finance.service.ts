@@ -106,8 +106,8 @@ export class AdminFinanceService {
   /**
    * 4. MUTATION EXECUTOR: APPROVE WITHDRAWAL
    */
-  async approveWithdrawal(withdrawalId: string, adminUserId: string) {
-    // Phase 1: Lock state in DB & transition to PROCESSING
+async approveWithdrawal(withdrawalId: string, adminUserId: string) {
+    // Phase 1: Atomic Database Verification and Lock State Transition
     const withdrawal = await this.prisma.$transaction(async (tx) => {
       const payout = await tx.withdrawal.findUnique({
         where: { id: withdrawalId },
@@ -119,14 +119,18 @@ export class AdminFinanceService {
         throw new BadRequestException('WITHDRAWAL_ALREADY_PROCESSED');
       }
 
+      if (!payout.bankCode || !payout.accountNumber) {
+        throw new BadRequestException('BANK_DETAILS_MISSING');
+      }
+
       if (Number(payout.wallet.pendingBalance) < Number(payout.amount)) {
         throw new BadRequestException('INSUFFICIENT_PENDING_ESCROW');
       }
 
-      // Decrement pending balance
+      // Decrement pending balance safely
       await tx.wallet.update({
         where: { id: payout.walletId },
-        data: { pendingBalance: { decrement: payout.amount } },
+        data: { pendingBalance: { decrement: Number(payout.amount) } },
       });
 
       return tx.withdrawal.update({
@@ -148,6 +152,10 @@ export class AdminFinanceService {
         narration: `Aviorè Rider Payout`,
         reference: referenceCode,
       });
+
+      if (!transferResponse || (!transferResponse.id && !transferResponse?.data?.id)) {
+        throw new Error('Flutterwave tracking parameter declaration missing or empty');
+      }
 
       // Phase 3: Update Withdrawal to SUCCESS & Create Audit Transaction
       return await this.prisma.$transaction(async (tx) => {
@@ -177,7 +185,7 @@ export class AdminFinanceService {
       await this.prisma.$transaction([
         this.prisma.wallet.update({
           where: { id: withdrawal.walletId },
-          data: { pendingBalance: { increment: withdrawal.amount } },
+          data: { pendingBalance: { increment: Number(withdrawal.amount) } },
         }),
         this.prisma.withdrawal.update({
           where: { id: withdrawalId },

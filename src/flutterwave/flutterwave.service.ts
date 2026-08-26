@@ -351,16 +351,45 @@ async initializePayment(
       return booking;
     });
   }
-  private async handleShipmentVerification(paymentData: any, shipmentId: string, isSuccessful: boolean) {
-    const existingPayment = await this.prisma.payment.findUnique({
+private async handleShipmentVerification(paymentData: any, shipmentId: string, isSuccessful: boolean) {
+    if (!isSuccessful) {
+      this.logger.warn(`[PAYMENT_FAILED] TxRef: ${paymentData.tx_ref} marked as failed.`);
+      return;
+    }
+
+    let existingPayment = await this.prisma.payment.findUnique({
       where: { txRef: paymentData.tx_ref },
     });
 
+    // Fallback safety net: If the payment row wasn't pre-created before redirect, create it now!
     if (!existingPayment) {
-      throw new NotFoundException('Transaction record not found.');
+      this.logger.warn(`[PAYMENT_RECORD_MISSING_FALLBACK] Creating missing payment record for txRef: ${paymentData.tx_ref}`);
+      
+      const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
+      if (!shipment) {
+        throw new NotFoundException('Associated shipment not found.');
+      }
+
+      existingPayment = await this.prisma.payment.create({
+        data: {
+          shipmentId: shipmentId,
+          gateway: 'FLUTTERWAVE',
+          txRef: paymentData.tx_ref,
+          flutterwaveTxId: String(paymentData.id),
+          flutterwaveRef: paymentData.flw_ref,
+          amount: Number(paymentData.amount),
+          status: PaymentStatus.SUCCESS,
+          customerId: shipment.customerId,
+        },
+      });
+
+      // Activate the shipment immediately since payment succeeded
+      await this.activateAndDispatchShipment(shipmentId);
+      return;
     }
 
-    if (isSuccessful && Number(paymentData.amount) < Number(existingPayment.amount)) {
+    // Fraud check safeguard
+    if (Number(paymentData.amount) < Number(existingPayment.amount)) {
       this.logger.error(
         `[PAYMENT_FRAUD_ATTEMPT] TxRef: ${paymentData.tx_ref}. Expected: ${existingPayment.amount}, Paid: ${paymentData.amount}`,
       );
@@ -375,7 +404,7 @@ async initializePayment(
           status: PaymentStatus.PENDING,
         },
         data: {
-          status: isSuccessful ? PaymentStatus.SUCCESS : PaymentStatus.FAILED,
+          status: PaymentStatus.SUCCESS,
           flutterwaveTxId: String(paymentData.id),
           flutterwaveRef: paymentData.flw_ref,
         },
@@ -383,7 +412,7 @@ async initializePayment(
       wasUpdated = updateResult.count > 0;
     }
 
-    if (isSuccessful && wasUpdated) {
+    if (wasUpdated || existingPayment.status === PaymentStatus.SUCCESS) {
       await this.activateAndDispatchShipment(shipmentId);
 
       if (existingPayment.customerId) {

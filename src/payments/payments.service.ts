@@ -9,7 +9,7 @@ import { firstValueFrom } from 'rxjs';
 import { HttpService } from '@nestjs/axios';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '../notification/dto/send-notification.dto';
-import { LedgerCategory } from '@prisma/client';
+import { LedgerCategory, ShipmentStatus, PaymentStatus } from '@prisma/client';
 
 @Injectable()
 export class PaymentsService {
@@ -83,7 +83,8 @@ export class PaymentsService {
   }
 
   /**
-   * Escrow Hold: Confirms payment status for shipment
+   * Escrow Hold: Confirms payment status for shipment, 
+   * transitions shipment to PENDING, and broadcasts push notifications to online delivery riders.
    */
   async holdEscrow(shipmentId: string, paymentId: string) {
     const payment = await this.prisma.payment.findUnique({
@@ -96,12 +97,81 @@ export class PaymentsService {
       );
     }
 
-    return this.prisma.payment.update({
+    // 1. Update Payment status
+    const updatedPayment = await this.prisma.payment.update({
       where: { id: paymentId },
       data: {
         status: 'SUCCESS',
       },
     });
+
+    // 2. Update Shipment status from AWAITING_PAYMENT to PENDING (Live)
+    const shipment = await this.prisma.shipment.update({
+      where: { id: shipmentId },
+      data: {
+        status: ShipmentStatus.PENDING,
+        paymentStatus: PaymentStatus.SUCCESS,
+        timelineEvents: {
+          create: {
+            status: ShipmentStatus.PENDING,
+            description: 'Payment confirmed successfully. Shipment is now active and broadcasting to riders.',
+            changedBy: 'SYSTEM',
+          },
+        },
+      },
+    });
+
+    // 🚀 3. Trigger Async Push & In-App Broadcast to Online DELIVERY Riders (not event drivers)
+    this.notifyOnlineDeliveryRiders(shipment).catch((err) => {
+      console.error('[Notification Dispatch Error]: Failed to alert riders:', err);
+    });
+
+    return updatedPayment;
+  }
+
+  /**
+   * Helper to query online delivery riders and broadcast notifications
+   */
+  private async notifyOnlineDeliveryRiders(shipment: any) {
+    try {
+      // Query RiderProfiles that are currently online and have active shipments relation capability
+      const onlineRiders = await this.prisma.riderProfile.findMany({
+        where: { 
+          isOnline: true,
+          // Add any specific delivery-rider filters here if needed
+        },
+        include: { user: true },
+      });
+
+      if (!onlineRiders || onlineRiders.length === 0) {
+        console.log(`[Notification Warning] No online delivery riders found to notify for shipment: ${shipment.trackingCode}`);
+        return;
+      }
+
+      await Promise.all(
+        onlineRiders.map(async (rider) => {
+          if (!rider.userId) return;
+
+          return this.notificationService.dispatch({
+            type: NotificationType.RIDER_ASSIGNED,
+            userId: rider.userId,
+            email: rider.user?.email,
+            title: '📦 New Delivery Request Available!',
+            body: `A new shipment (${shipment.trackingCode}) from ${shipment.pickupAddress} is waiting for pickup.`,
+            data: {
+              shipmentId: shipment.id,
+              trackingCode: shipment.trackingCode,
+              url: `/rider/dashboard/jobs`,
+              type: 'RIDER_ASSIGNED',
+            },
+          });
+        }),
+      );
+
+      console.log(`[Notification Success] Notified ${onlineRiders.length} delivery riders for paid shipment ${shipment.trackingCode}`);
+    } catch (error) {
+      console.error('[Notification Error] Failed broadcasting to delivery riders:', error);
+    }
   }
 
   /**
@@ -153,7 +223,7 @@ export class PaymentsService {
           walletId: wallet.id,
           amount: riderAmount,
           type: 'CREDIT',
-          category: LedgerCategory.RIDER_EARNINGS, // 👈 Exact enum value
+          category: LedgerCategory.RIDER_EARNINGS,
           referenceCode: `EARN-${shipment.trackingCode}`,
           description: `Payout for delivered shipment #${shipment.trackingCode}`,
         },

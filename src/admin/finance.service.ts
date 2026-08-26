@@ -106,6 +106,9 @@ export class AdminFinanceService {
   /**
    * 4. MUTATION EXECUTOR: APPROVE WITHDRAWAL
    */
+/**
+   * 4. MUTATION EXECUTOR: APPROVE WITHDRAWAL
+   */
   async approveWithdrawal(withdrawalId: string, adminUserId: string) {
     // =========================================================================
     // PHASE 1: Atomic Database Verification, Balance Check & State Lock
@@ -158,27 +161,29 @@ export class AdminFinanceService {
     // PHASE 2: Live External Gateway Transfer Engine (Flutterwave)
     // =========================================================================
     try {
-      console.log(`🚀 INITIATING FLUTTERWAVE PAYOUT FOR ID: ${withdrawal.id}`, {
-        amount: Number(withdrawal.amount),
-        account_number: withdrawal.accountNumber,
-        account_bank: withdrawal.bankCode,
-        reference: referenceCode,
-      });
-
-      const transferResponse = await this.flutterwaveService.initiateTransfer({
+      const transferPayload = {
         account_bank: withdrawal.bankCode,
         account_number: withdrawal.accountNumber,
         amount: Number(withdrawal.amount),
         currency: 'NGN',
         narration: `Aviorè Rider Payout`,
         reference: referenceCode,
-      });
+      };
 
-      console.log('✅ FLUTTERWAVE TRANSFER RESPONSE:', transferResponse);
+      console.log(`🚀 INITIATING FLUTTERWAVE PAYOUT FOR ID: ${withdrawal.id}`, transferPayload);
 
-      const transferId = transferResponse?.data?.id || transferResponse?.id;
+      const transferResponse = await this.flutterwaveService.initiateTransfer(transferPayload);
+
+      console.log('✅ RAW FLUTTERWAVE TRANSFER RESPONSE:', JSON.stringify(transferResponse, null, 2));
+
+      // Robustly extract transfer ID from various possible response nesting structures
+      const transferId = 
+        transferResponse?.data?.id || 
+        transferResponse?.id || 
+        transferResponse?.data?.data?.id;
+
       if (!transferId) {
-        throw new Error('Flutterwave tracking parameter declaration missing or empty');
+        throw new Error(`Flutterwave tracking ID missing in response payload: ${JSON.stringify(transferResponse)}`);
       }
 
       // =========================================================================
@@ -231,7 +236,7 @@ export class AdminFinanceService {
             data: { status: WithdrawalStatus.PENDING },
           }),
         ]);
-        console.log(`🔄 successfully rolled back state for failed payout: ${withdrawal.id}`);
+        console.log(`🔄 Successfully rolled back state for failed payout: ${withdrawal.id}`);
       } catch (rollbackError: any) {
         console.error(`🔥 CRITICAL ROLLBACK FAILURE FOR [${withdrawal.id}]:`, rollbackError.message);
       }

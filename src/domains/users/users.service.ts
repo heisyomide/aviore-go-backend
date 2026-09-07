@@ -12,13 +12,12 @@ export class UsersService {
   }
 
   async findByPhone(phoneNumber: string) {
-    // 🟢 No check needed here since it's a guaranteed string now
     return this.prisma.user.findUnique({ where: { phoneNumber } });
   }
 
   async createUser(data: {
     email: string;
-    phoneNumber: string; // 🟢 Required string to match schema
+    phoneNumber: string;
     passwordRaw: string;
     firstName: string;
     lastName: string;
@@ -37,7 +36,7 @@ export class UsersService {
       const user = await tx.user.create({
         data: {
           email: data.email,
-          phoneNumber: data.phoneNumber, // 🟢 Directly pass the required string
+          phoneNumber: data.phoneNumber,
           passwordHash,
           firstName: data.firstName,
           lastName: data.lastName,
@@ -58,12 +57,13 @@ export class UsersService {
         });
       }
 
-      // If they are a vendor/business, spin up their operational business stub
-      if (data.role === 'BUSINESS_OWNER') {
-        await tx.businessProfile.create({
+      // If they are a merchant, spin up their operational merchant profile stub
+      if (data.role === 'MERCHANT') {
+        await tx.merchantProfile.create({
           data: {
             userId: user.id,
-            businessName: `${data.firstName}'s Logistics Hub`,
+            businessName: `${data.firstName}'s Food Store`,
+            merchantType: 'FOOD',
           },
         });
       }

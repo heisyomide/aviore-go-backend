@@ -80,6 +80,20 @@ export class AuthController {
     });
   }
 
+  @Post('register/merchant')
+  async registerMerchant(
+    @Body() body: { email: string; password?: string; passwordRaw?: string; firstName?: string; lastName?: string; phoneNumber?: string },
+  ) {
+    const password = body.password ?? body.passwordRaw ?? '';
+    return this.authService.registerMerchant({
+      email: body.email,
+      password,
+      firstName: body.firstName,
+      lastName: body.lastName,
+      phoneNumber: body.phoneNumber,
+    });
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() body: { email: string; password?: string; passwordRaw?: string }) {

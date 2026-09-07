@@ -20,10 +20,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // Adjust path to 
 export class FlutterwaveController {
   constructor(private readonly flutterwaveService: FlutterwaveService) {}
 
-  @Post('initialize')
-  @UseGuards(JwtAuthGuard) // <--- Protect endpoint and parse user context
+@Post('initialize')
+  @UseGuards(JwtAuthGuard)
   initialize(@Body() dto: InitializePaymentDto, @Req() req: any) {
-    const userId = req.user?.id || req.user?.userId;
+    console.log('--- JWT USER DEBUG ---', req.user);
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
     return this.flutterwaveService.initializePayment(dto, userId);
   }
 
@@ -32,11 +33,17 @@ export class FlutterwaveController {
     return this.flutterwaveService.verifyPayment(transactionId);
   }
 
-  @Post('withdraw')
+@Post('withdraw')
   @UseGuards(JwtAuthGuard)
-  withdraw(@Req() req: any, @Body() dto: TransferDto) {
+  withdraw(@Req() req: any, @Body() dto: TransferDto & { bankCode: string; accountNumber: string; bankName?: string }) {
     const userId = req.user?.id || req.user?.userId || dto.riderId;
-    return this.flutterwaveService.requestWithdrawal(userId, dto.amount);
+    return this.flutterwaveService.requestWithdrawal(
+      userId, 
+      dto.amount, 
+      dto.bankCode, 
+      dto.accountNumber, 
+      dto.bankName
+    );
   }
 
   @Get('banks')

@@ -28,3 +28,4 @@ export class CreateLandmarkDto {
   @IsLongitude()
   longitude!: number;
 }
+

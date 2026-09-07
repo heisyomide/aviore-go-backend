@@ -1,9 +1,11 @@
 import {
+  IsBoolean,
   IsEmail,
   IsNumber,
   IsOptional,
   IsString,
   Min,
+  IsArray,
 } from 'class-validator';
 
 export class InitializePaymentDto {
@@ -33,10 +35,23 @@ export class InitializePaymentDto {
 
   @IsOptional()
   @IsString()
-  tripType?: string; // <--- ADDED THIS PROPERTY
+  tripType?: string;
 
+  @IsOptional()
+  @IsBoolean()
+  cartCheckout?: boolean;
+
+  @IsOptional()
+  @IsString()
+  cartId?: string;
+
+  @IsOptional()
+  @IsArray()
+  items?: any[]; // <--- Added to prevent validation rejection
+
+  @IsOptional()
   @IsEmail()
-  email!: string;
+  email?: string;
 
   @IsOptional()
   @IsNumber()

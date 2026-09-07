@@ -2,7 +2,10 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Patch,
+  Post,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 
@@ -14,6 +17,8 @@ import { GetUser } from "../auth/decorators/get-user.decorator";
 
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
+import { UpdateDeliveryAddressDto } from "./dto/update-delivery-address.dto";
+import { CreateAddressDto } from "./dto/create-address.dto";
 
 @Controller("profile")
 @UseGuards(JwtAuthGuard)
@@ -56,4 +61,32 @@ export class ProfileController {
       dto,
     );
   }
+
+  @Patch('address')
+  async updateDeliveryAddress(
+    @Req() req: any, // or use your custom @CurrentUser() decorator
+    @Body() dto: UpdateDeliveryAddressDto,
+  ) {
+    const customerId = req.user.id || req.user.userId;
+    return this.profileService.updateDeliveryAddress(customerId, dto);
+  }
+
+  @Get('addresses')
+  async getUserAddresses(@Req() req: any) {
+    const userId = req.user.id || req.user.userId;
+    return this.profileService.getUserAddresses(userId);
+  }
+
+  @Post('addresses')
+  async addAddress(@Req() req: any, @Body() dto: CreateAddressDto) {
+    const userId = req.user.id || req.user.userId;
+    return this.profileService.addAddress(userId, dto);
+  }
+
+  @Patch('addresses/:id/default')
+  async setDefaultAddress(@Req() req: any, @Param('id') addressId: string) {
+    const userId = req.user.id || req.user.userId;
+    return this.profileService.setDefaultAddress(userId, addressId);
+  }
+
 }

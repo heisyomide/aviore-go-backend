@@ -1,23 +1,22 @@
 import { Injectable, ConflictException, BadRequestException } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { UserRole, MerchantType } from '@prisma/client';
 import { PrismaService } from '../providers/database/prisma.service';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
   async findByEmail(email: string) {
-    // 🌟 Safety Guard: Return null immediately if string is missing, undefined, or empty
     if (!email) {
       return null;
     }
-    return this.prisma.user.findUnique({ where: { email } });
+    return this.prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
   }
 
   async findByPhone(phoneNumber: string) {
-    // 🌟 Safety Guard: Return null immediately if string is missing, undefined, or empty
-    if (!phoneNumber) {
+    if (!phoneNumber || phoneNumber.startsWith('PENDING_')) {
       return null;
     }
     return this.prisma.user.findUnique({ where: { phoneNumber } });
@@ -25,41 +24,53 @@ export class UsersService {
 
   async createUser(data: {
     email: string;
-    phoneNumber: string; 
+    phoneNumber?: string; 
     passwordRaw: string;
-    firstName: string;
-    lastName: string;
+    firstName?: string;
+    lastName?: string;
     role: UserRole;
+    merchantType?: string;
   }) {
-    // 🚨 Add a defensive check to capture missing passwords immediately
     if (!data.passwordRaw) {
       throw new BadRequestException('Password (passwordRaw) is required to create a user.');
     }
 
-    const existingEmail = await this.findByEmail(data.email);
+    const emailFormatted = data.email.toLowerCase().trim();
+    const emailToken = crypto.randomUUID();
+
+    const existingEmail = await this.findByEmail(emailFormatted);
     if (existingEmail) throw new ConflictException('Email already registered');
 
-    const existingPhone = await this.findByPhone(data.phoneNumber);
-    if (existingPhone) throw new ConflictException('Phone number already registered');
+    const cleanPhone =
+      data.phoneNumber && data.phoneNumber.trim().length > 0
+        ? data.phoneNumber.trim()
+        : `PENDING_${emailToken}`;
 
-    // Generate salt and hash safely
+    if (!cleanPhone.startsWith('PENDING_')) {
+      const existingPhone = await this.findByPhone(cleanPhone);
+      if (existingPhone) throw new ConflictException('Phone number already registered');
+    }
+
+    const cleanFirstName = data.firstName?.trim() || '';
+    const cleanLastName = data.lastName?.trim() || '';
+
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(data.passwordRaw, salt);
 
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
-          email: data.email,
-          phoneNumber: data.phoneNumber,
+          email: emailFormatted,
+          phoneNumber: cleanPhone,
           passwordHash,
-          firstName: data.firstName,
-          lastName: data.lastName,
+          firstName: cleanFirstName,
+          lastName: cleanLastName,
           role: data.role,
           status: data.role === 'CUSTOMER' ? 'VERIFIED' : 'PENDING_VERIFICATION',
+          emailVerificationToken: data.role !== 'CUSTOMER' ? emailToken : null,
         },
       });
 
-      // Automatically assign an empty operational wallet to every user record
       await tx.wallet.create({
         data: {
           userId: user.id,
@@ -68,19 +79,19 @@ export class UsersService {
         },
       });
 
-      // If they are registering as a rider, spin up their baseline rider profile stub
       if (data.role === 'RIDER') {
         await tx.riderProfile.create({
           data: { userId: user.id },
         });
       }
 
-      // If they are a vendor/business, spin up their operational business stub
-      if (data.role === 'BUSINESS_OWNER') {
-        await tx.businessProfile.create({
+      if (data.role === 'MERCHANT') {
+        const resolvedMerchantType = (data.merchantType as MerchantType) || MerchantType.FOOD;
+        await tx.merchantProfile.create({
           data: {
             userId: user.id,
-            businessName: `${data.firstName}'s Logistics Hub`,
+            businessName: `${cleanFirstName || 'My'} Store`,
+            merchantType: resolvedMerchantType,
           },
         });
       }
@@ -88,19 +99,19 @@ export class UsersService {
       return user;
     });
   }
-  // Inside users.service.ts
-async findById(id: string) {
-  return this.prisma.user.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      role: true,
-      status: true,
-      phoneNumber: true,
-    },
-  });
-}
+
+  async findById(id: string) {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        status: true,
+        phoneNumber: true,
+      },
+    });
+  }
 }

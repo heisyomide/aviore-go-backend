@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
 import { NotificationService } from '../notification/notification.service';
@@ -6,7 +6,15 @@ import { NotificationType } from '../notification/dto/send-notification.dto';
 import { PrismaService } from '../providers/database/prisma.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
-import { IdentityStatus } from '@prisma/client';
+import { IdentityStatus, UserRole,MerchantType } from '@prisma/client';
+
+interface BaseRegisterDto {
+  email: string;
+  password: string;
+  firstName?: string;
+  lastName?: string;
+  phoneNumber?: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -17,16 +25,9 @@ export class AuthService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async registerRider(dto: {
-    email: string;
-    password: string;
-    firstName?: string;
-    lastName?: string;
-    phoneNumber?: string;
-  }) {
+  private async createBaseUser(dto: BaseRegisterDto, role: UserRole, extraData?: any) {
     const emailFormatted = dto.email.toLowerCase().trim();
 
-    // Check if user already exists
     const existingUser = await this.prisma.user.findUnique({
       where: { email: emailFormatted },
     });
@@ -35,48 +36,94 @@ export class AuthService {
       throw new BadRequestException('An account with this email already exists.');
     }
 
-    // Hash the user's password
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const emailToken = crypto.randomUUID();
 
-    // Handle phone number cleanly: Only use PENDING_ if phone number is completely omitted
     const cleanPhone =
       dto.phoneNumber && dto.phoneNumber.trim().length > 0
         ? dto.phoneNumber.trim()
         : `PENDING_${emailToken}`;
 
-    // Create User with submitted names and phone (or safe fallback)
     const newUser = await this.prisma.user.create({
       data: {
         email: emailFormatted,
         phoneNumber: cleanPhone,
         passwordHash,
-        role: 'RIDER',
+        role,
         status: IdentityStatus.PENDING_VERIFICATION,
         emailVerificationToken: emailToken,
         firstName: dto.firstName?.trim() || '',
         lastName: dto.lastName?.trim() || '',
+        ...extraData,
       },
     });
 
-    // Construct verification link
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const confirmLink = `${frontendUrl}/confirm-email?token=${emailToken}`;
 
-    // Send confirmation email
-    await this.notificationService.dispatch({
-      type: NotificationType.ACCOUNT_WELCOME,
-      userId: newUser.id,
-      email: newUser.email,
-      title: 'Confirm your Aviorè email address',
-      body: 'Welcome to Aviorè Go! Please confirm your email address to verify your account and complete your rider onboarding.',
-      data: {
-        url: confirmLink,
-        actionText: 'Confirm Your Email',
-      },
-    });
+const roleTitles: Partial<Record<UserRole, string>> = {
+      RIDER: 'Confirm your Aviorè email address',
+      ORGANIZER: 'Confirm your Aviorè organizer email address',
+      MERCHANT: 'Confirm your Aviorè merchant email address',
+      ADMIN: 'Confirm your Aviorè admin email address',
+      CUSTOMER: 'Confirm your Aviorè email address',
+    };
+
+    const roleBodies: Partial<Record<UserRole, string>> = {
+      RIDER: 'Welcome to Aviorè Go! Please confirm your email address to verify your account and complete your rider onboarding.',
+      ORGANIZER: 'Welcome to Aviorè! Please confirm your email address to verify your account and proceed to your organization setup.',
+      MERCHANT: 'Welcome to Aviorè! Please confirm your email address to proceed to your food store onboarding.',
+      ADMIN: 'Welcome to Aviorè! Please confirm your email address.',
+      CUSTOMER: 'Welcome to Aviorè! Please confirm your email address.',
+    };
+
+    try {
+      await this.notificationService.dispatch({
+        type: NotificationType.ACCOUNT_WELCOME,
+        userId: newUser.id,
+        email: newUser.email,
+        title: roleTitles[role] || 'Confirm your Aviorè email address',
+        body: roleBodies[role] || 'Please confirm your email address.',
+        data: {
+          url: confirmLink,
+          actionText: 'Confirm Your Email',
+        },
+      });
+    } catch (error) {
+      console.error(`[CRITICAL] Failed to dispatch verification email for ${role}:`, error);
+      throw new BadRequestException('Registration succeeded, but verification email dispatch failed. Please contact support.');
+    }
 
     return { message: 'Registration successful! Please check your email to confirm your account.' };
+  }
+
+  async registerRider(dto: BaseRegisterDto) {
+    return this.createBaseUser(dto, 'RIDER');
+  }
+
+  async registerOrganizer(dto: BaseRegisterDto) {
+    return this.createBaseUser(dto, 'ORGANIZER');
+  }
+
+async registerMerchant(dto: BaseRegisterDto & { merchantType?: string }) {
+    const result = await this.createBaseUser(dto, 'MERCHANT');
+    
+    // Fetch the newly created user to get their ID for the profile relation
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase().trim() } });
+    
+if (user) {
+      await this.prisma.merchantProfile.create({
+        data: {
+          userId: user.id,
+          businessName: `${dto.firstName?.trim() || 'My'} Store`,
+          merchantType: (dto.merchantType as MerchantType) || MerchantType.FOOD,
+          onboardingStep: 1,
+          isOnboardingComplete: false,
+        },
+      });
+    }
+
+    return result;
   }
 
   async confirmEmail(token: string) {
@@ -92,7 +139,6 @@ export class AuthService {
       throw new BadRequestException('Invalid or expired confirmation link.');
     }
 
-    // Mark email as confirmed and clear token
     const updatedUser = await this.prisma.user.update({
       where: { id: user.id },
       data: {
@@ -101,14 +147,12 @@ export class AuthService {
       },
     });
 
-    // Generate auth session token so they are logged in on the onboarding page
     const accessToken = this.jwtService.sign({
       sub: updatedUser.id,
       email: updatedUser.email,
       role: updatedUser.role,
     });
 
-    // 🟢 Filter out PENDING_ placeholder so it never reaches frontend storage
     const sanitizedPhone =
       updatedUser.phoneNumber && !updatedUser.phoneNumber.startsWith('PENDING_')
         ? updatedUser.phoneNumber
@@ -129,91 +173,22 @@ export class AuthService {
     };
   }
 
-
-  async registerOrganizer(dto: {
-    email: string;
-    password: string;
-    firstName?: string;
-    lastName?: string;
-    phoneNumber?: string;
-  }) {
-    const emailFormatted = dto.email.toLowerCase().trim();
-
-    // Check if user already exists
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: emailFormatted },
-    });
-
-    if (existingUser) {
-      throw new BadRequestException('An account with this email already exists.');
-    }
-
-    // Hash the user's password
-    const passwordHash = await bcrypt.hash(dto.password, 10);
-    const emailToken = crypto.randomUUID();
-
-    // Handle phone number cleanly: Only use PENDING_ if phone number is completely omitted
-    const cleanPhone =
-      dto.phoneNumber && dto.phoneNumber.trim().length > 0
-        ? dto.phoneNumber.trim()
-        : `PENDING_${emailToken}`;
-
-    // Create User with ORGANIZER role and PENDING_VERIFICATION status
-    const newUser = await this.prisma.user.create({
-      data: {
-        email: emailFormatted,
-        phoneNumber: cleanPhone,
-        passwordHash,
-        role: 'ORGANIZER',
-        status: IdentityStatus.PENDING_VERIFICATION,
-        emailVerificationToken: emailToken,
-        firstName: dto.firstName?.trim() || '',
-        lastName: dto.lastName?.trim() || '',
-      },
-    });
-
-    // Construct verification link
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const confirmLink = `${frontendUrl}/confirm-email?token=${emailToken}`;
-
-    // Send confirmation email
-    await this.notificationService.dispatch({
-      type: NotificationType.ACCOUNT_WELCOME,
-      userId: newUser.id,
-      email: newUser.email,
-      title: 'Confirm your Aviorè organizer email address',
-      body: 'Welcome to Aviorè! Please confirm your email address to verify your account and proceed to your organization setup.',
-      data: {
-        url: confirmLink,
-        actionText: 'Confirm Your Email',
-      },
-    });
-
-    return { message: 'Registration successful! Please check your email to confirm your account.' };
-  }
-
   async validateUser(email: string, passwordRaw: string) {
     console.log('[DEBUG AUTH] Incoming payload parameters:', { email, passwordRaw });
 
     const user = await this.usersService.findByEmail(email);
 
     if (!user) {
-      console.log(
-        `[DEBUG AUTH] User lookup failed. No database record found for email: ${email}`,
-      );
+      console.log(`[DEBUG AUTH] User lookup failed. No database record found for email: ${email}`);
       return null;
     }
 
     console.log('[DEBUG AUTH] User found. Matching secure hashes now...');
 
-    // Compare against database hash
     let isMatch = await bcrypt.compare(passwordRaw, user.passwordHash);
 
-    // Dev Override Zone
     if (passwordRaw === 'password123' || passwordRaw === 'password122') {
-      console.log(
-        `[DEBUG AUTH] 🛠️ Dev Override Activated: Forcing successful login match for ${email}`,
-      );
+      console.log(`[DEBUG AUTH] 🛠️ Dev Override Activated: Forcing successful login match for ${email}`);
       isMatch = true;
     }
 
@@ -231,7 +206,6 @@ export class AuthService {
     const payload = { sub: user.id, email: user.email, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 
-    // 🔔 Trigger Login Alert Notification asynchronously
     this.notificationService
       .dispatch({
         type: NotificationType.LOGIN_ALERT,
@@ -244,7 +218,6 @@ export class AuthService {
         console.error('[AUTH NOTIFICATION FAILED]', err);
       });
 
-    // 🟢 Filter out PENDING_ placeholder so it never reaches frontend storage
     const sanitizedPhone =
       user.phoneNumber && !user.phoneNumber.startsWith('PENDING_')
         ? user.phoneNumber

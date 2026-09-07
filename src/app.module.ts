@@ -31,10 +31,15 @@ import { DisputeModule } from './dispute/dispute.module';
 import { WebSocketModule } from './communication/websocket/websocket.module';
 import { EventsModule } from './event/event.module';
 import { OrganizerModule } from './organizer/organizer.module';
+import { MerchantModule } from './merchant/merchant.module';
+import { StorefrontModule } from './storefront/storefront.module';
+import { CategoriesModule } from './categories/categories.module';
+import { CartModule } from './cart/cart.module';
+import { FoodOrdersModule } from './orders/order.module';
 
 
 @Module({
-  imports: [DatabaseModule,OrganizerModule, EventsModule, DatabaseModule, WebSocketModule, DisputeModule, LandmarksModule, NotificationModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
+  imports: [DatabaseModule, FoodOrdersModule, MerchantModule,  CartModule, CategoriesModule, StorefrontModule, OrganizerModule, EventsModule, DatabaseModule, WebSocketModule, DisputeModule, LandmarksModule, NotificationModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
     RiderDashboardModule, FlutterwaveModule , PricingModule,UsersModule, 
     PaymentsModule, TrackingModule, AuthModule, RiderProfileModule, WalletModule, ShipmentsModule,ScheduleModule.forRoot(), RiderModule,],
   controllers: [],

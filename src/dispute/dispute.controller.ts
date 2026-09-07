@@ -24,17 +24,17 @@ import { Roles } from '../auth/decorators/roles.decorator';
 export class DisputeController {
   constructor(private readonly disputeService: DisputeService) {}
 
-  // 1. POST /disputes - ONLY Customer & Rider can open disputes
+  // 1. POST /disputes - Allowed for Customer, Rider, and Merchant
   @Post()
-  @Roles(UserRole.CUSTOMER, UserRole.RIDER)
+  @Roles(UserRole.CUSTOMER, UserRole.RIDER, UserRole.MERCHANT)
   async createDispute(@Request() req: any, @Body() dto: CreateDisputeDto) {
     const userId = req.user.id;
     return this.disputeService.createDispute(userId, dto);
   }
 
-  // 2a. GET /disputes/my-disputes - Fetch disputes created by the authenticated user
+  // 2a. GET /disputes/my-disputes - Allowed for Customer, Rider, and Merchant
   @Get('my-disputes')
-  @Roles(UserRole.CUSTOMER, UserRole.RIDER)
+  @Roles(UserRole.CUSTOMER, UserRole.RIDER, UserRole.MERCHANT)
   async findMyDisputes(@Request() req: any) {
     const userId = req.user.id;
     return this.disputeService.findMyDisputes(userId);
@@ -50,14 +50,13 @@ export class DisputeController {
     return this.disputeService.findAll(status, jobId);
   }
 
-  // 3. GET /disputes/:id - Admin can view ANY dispute, User can ONLY view THEIR OWN dispute
+  // 3. GET /disputes/:id - Admin, Customer, Rider, or Merchant can view their respective dispute
   @Get(':id')
-  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.CUSTOMER, UserRole.RIDER)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.CUSTOMER, UserRole.RIDER, UserRole.MERCHANT)
   async findOne(@Param('id') id: string, @Request() req: any) {
     const user = req.user;
     const dispute = await this.disputeService.findOne(id);
 
-    // Security Check: If user is not Admin, ensure they are the reporter of this dispute
     const isAdmin = user.role === UserRole.ADMIN || user.role === UserRole.SUPER_ADMIN;
     if (!isAdmin && dispute.reporterId !== user.id) {
       throw new ForbiddenException('You do not have permission to view this dispute.');
@@ -66,7 +65,7 @@ export class DisputeController {
     return dispute;
   }
 
-  // 4. PATCH /disputes/:id/status - ONLY Admin can update status to UNDER_REVIEW
+  // 4. PATCH /disputes/:id/status - Admin only
   @Patch(':id/status')
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   async updateStatus(
@@ -78,7 +77,7 @@ export class DisputeController {
     return this.disputeService.updateStatus(id, adminId, status);
   }
 
-  // 5. PATCH /disputes/:id/resolve - ONLY Admin can resolve or reject disputes
+  // 5. PATCH /disputes/:id/resolve - Admin only
   @Patch(':id/resolve')
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   async resolveDispute(

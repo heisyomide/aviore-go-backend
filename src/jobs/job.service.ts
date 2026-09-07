@@ -45,9 +45,9 @@ export class RiderJobsService {
   }
 
   /**
-   * Get all available jobs (Splits automatically between small parcel shipments and event transit jobs based on vehicle type)
+   * Get all available jobs (Splits automatically between small parcel/food shipments and event transit jobs based on vehicle type)
    */
-async getAvailableJobs(userId: string) {
+  async getAvailableJobs(userId: string) {
     const rider = await this.getActiveRider(userId, true);
     const vehicleType = rider?.activeVehicle?.type;
 
@@ -153,6 +153,7 @@ async getAvailableJobs(userId: string) {
       jobs,
     };
   }
+
   /**
    * Get a single job (Handles both parcel shipments and event transit jobs)
    */
@@ -199,7 +200,7 @@ async getAvailableJobs(userId: string) {
       };
     }
 
-    // 2. Fallback to standard parcel shipment job details
+    // 2. Fallback to standard parcel/food shipment job details
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: jobId },
     });
@@ -288,7 +289,7 @@ async getAvailableJobs(userId: string) {
       };
     }
 
-    // Standard parcel shipment acceptance workflow
+    // Standard parcel/food shipment acceptance workflow
     const reserved = this.dispatchService.reserveShipment(jobId, riderUserId);
 
     if (!reserved) {
@@ -312,6 +313,14 @@ async getAvailableJobs(userId: string) {
             status: ShipmentStatus.ACCEPTED,
           },
         });
+
+        // Sync linked FoodOrder status if applicable
+        if (shipment.deliveryType === 'FOOD') {
+          await (tx as any).foodOrder.updateMany({
+            where: { shipmentId: shipment.id },
+            data: { status: 'ACCEPTED' },
+          });
+        }
 
         await tx.riderAssignment.create({
           data: {
@@ -377,6 +386,13 @@ async getAvailableJobs(userId: string) {
         data: { status: ShipmentStatus.PICKED_UP },
       });
 
+      if (shipment.deliveryType === 'FOOD') {
+        await (tx as any).foodOrder.updateMany({
+          where: { shipmentId: shipment.id },
+          data: { status: 'PICKED_UP' },
+        });
+      }
+
       await tx.statusTimeline.create({
         data: {
           shipmentId: shipment.id,
@@ -421,6 +437,13 @@ async getAvailableJobs(userId: string) {
         data: { status: ShipmentStatus.IN_TRANSIT },
       });
 
+      if (shipment.deliveryType === 'FOOD') {
+        await (tx as any).foodOrder.updateMany({
+          where: { shipmentId: shipment.id },
+          data: { status: 'IN_TRANSIT' },
+        });
+      }
+
       await tx.statusTimeline.create({
         data: {
           shipmentId: shipment.id,
@@ -464,6 +487,13 @@ async getAvailableJobs(userId: string) {
         where: { id: shipment.id },
         data: { status: ShipmentStatus.OUT_FOR_DELIVERY },
       });
+
+      if (shipment.deliveryType === 'FOOD') {
+        await (tx as any).foodOrder.updateMany({
+          where: { shipmentId: shipment.id },
+          data: { status: 'OUT_FOR_DELIVERY', deliveryStatus: 'OUT_FOR_DELIVERY' },
+        });
+      }
 
       await tx.statusTimeline.create({
         data: {
@@ -521,6 +551,13 @@ async getAvailableJobs(userId: string) {
         where: { id: shipment.id },
         data: { status: ShipmentStatus.DELIVERED },
       });
+
+      if (shipment.deliveryType === 'FOOD') {
+        await (tx as any).foodOrder.updateMany({
+          where: { shipmentId: shipment.id },
+          data: { status: 'DELIVERED', deliveryStatus: 'DELIVERED' },
+        });
+      }
 
       await tx.riderProfile.update({
         where: { id: rider.id },
@@ -596,23 +633,17 @@ async getAvailableJobs(userId: string) {
   /**
    * Dedicated endpoint for bus/van/car riders to browse scheduled event transit jobs
    */
-async getEventTransitJobsForDriver(userId: string) {
-    console.log('==================================================');
-    console.log(`[EventJobsService] 🚀 Starting getEventTransitJobsForDriver for userId: ${userId}`);
-
+  async getEventTransitJobsForDriver(userId: string) {
     try {
       const rider = await this.getActiveRider(userId, true);
       const vehicleType = rider?.activeVehicle?.type;
       
-      console.log(`[EventJobsService] Evaluated vehicleType: '${vehicleType ?? 'None found'}'`);
-
       const isEligible = 
         vehicleType === VehicleType.BUS || 
         vehicleType === VehicleType.VAN || 
         vehicleType === VehicleType.CAR;
 
       if (!isEligible) {
-        console.warn(`[EventJobsService] ⛔ Access Denied. Vehicle type '${vehicleType}' is not authorized for event transit.`);
         return {
           success: false,
           message: 'Event transit jobs are only available for Bus, Van, or Car vehicle profiles.',
@@ -620,25 +651,12 @@ async getEventTransitJobsForDriver(userId: string) {
         };
       }
 
-      const totalTripsInDb = await this.prisma.eventTrip.count();
-      console.log(`[EventJobsService] 📊 Total EventTrips records in database: ${totalTripsInDb}`);
-
-      // Diagnostic sample to inspect why filters might return empty sets
-      const rawSample = await this.prisma.eventTrip.findFirst();
-      console.log('[EventJobsService DEBUG] Sample EventTrip record fields:', {
-        driverId: rawSample?.driverId,
-        isPublished: rawSample?.isPublished,
-        status: rawSample?.status,
-      });
-
-      // Flexible query handling nullable/unassigned drivers and enum matching
       const availableTrips = await this.prisma.eventTrip.findMany({
         where: {
           OR: [
             { driverId: null },
             { driverId: '' },
           ],
-          
           status: 'SCHEDULED' as any,
         },
         include: {
@@ -653,10 +671,7 @@ async getEventTransitJobsForDriver(userId: string) {
         take: 20,
       });
 
-      console.log(`[EventJobsService] 🔍 Query complete. Found matching trips count: ${availableTrips.length}`);
-
- const jobs = availableTrips.map((trip) => {
-        // Use trip.driverPayout if present, otherwise fallback to route price
+      const jobs = availableTrips.map((trip) => {
         const driverPayoutAmount = trip.driverPayout !== null && trip.driverPayout !== undefined 
           ? Number(trip.driverPayout) 
           : Number(trip.route?.price ?? 0);
@@ -668,13 +683,12 @@ async getEventTransitJobsForDriver(userId: string) {
           tripLeg: trip.tripLeg,
           departureTime: trip.departureTime,
           arrivalTime: trip.arrivalTime,
-          // Provide structured payout object to match your frontend expectations
           payout: {
             driverPayout: driverPayoutAmount,
             customerOneWayFare: Number(trip.customerOneWayFare ?? trip.route?.price ?? 0),
             customerRoundTripFare: Number(trip.customerRoundTripFare ?? 0),
           },
-          driverPayout: driverPayoutAmount, // Root level fallback if needed
+          driverPayout: driverPayoutAmount,
           route: {
             routeId: trip.route?.id,
             originCity: trip.route?.originCity,
@@ -694,9 +708,6 @@ async getEventTransitJobsForDriver(userId: string) {
           pickupPoints: trip.route?.pickupPoints ?? [],
         };
       });
-
-      console.log(`[EventJobsService] ✨ Successfully mapped ${jobs.length} event jobs.`);
-      console.log('==================================================');
 
       return {
         jobType: 'EVENT_TRANSIT',

@@ -10,6 +10,7 @@ import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
 import { NotificationModule } from 'src/notification/notification.module';
 import { DispatchModule } from 'src/dispatch/dispatch.module';
+import { PricingModule } from 'src/pricing/pricing.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { DispatchModule } from 'src/dispatch/dispatch.module';
     DispatchModule,
     HttpModule,
     NotificationModule,
+    PricingModule,
   ],
 
   controllers: [WalletController],

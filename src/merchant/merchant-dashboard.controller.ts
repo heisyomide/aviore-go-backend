@@ -70,8 +70,6 @@ export class MerchantDashboardController {
     const userId = req.user?.id || req.user?.userId;
     return this.flutterwaveService.getMerchantTransactions(userId);
   }
-
-
 @Get('profile')
   async getProfile(@Req() req: any) {
     const userId = req?.user?.id || req?.user?.userId;
@@ -81,6 +79,8 @@ export class MerchantDashboardController {
         storeName: "My Restaurant",
         phone: "",
         address: "",
+        latitude: null,
+        longitude: null,
         description: "",
         logoUrl: "",
         coverUrl: "",
@@ -90,25 +90,26 @@ export class MerchantDashboardController {
       };
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { merchantProfile: true },
+    const profile = await this.prisma.merchantProfile.findUnique({
+      where: { userId },
     });
 
-    const profile = user?.merchantProfile;
-    const storeName = profile?.businessName || `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || "My Restaurant";
-    const slug = profile?.id ? profile.id.substring(0, 8).toLowerCase() : "store";
+    if (!profile) {
+      throw new NotFoundException('MERCHANT_PROFILE_NOT_FOUND');
+    }
 
     return {
-      storeName,
-      phone: profile?.phone || "",
-      address: profile?.address || "",
-      description: profile?.description || "",
-      logoUrl: profile?.logoUrl || "",
-      coverUrl: profile?.coverUrl || "",
-      storeSlug: slug,
-      restaurantId: `AVG-${slug.toUpperCase()}`,
-      storeUrl: `https://aviorego.com.ng/${slug}`,
+      storeName: profile.businessName,
+      phone: profile.phone,
+      address: profile.address,
+      latitude: profile.latitude,
+      longitude: profile.longitude,
+      description: profile.description,
+      logoUrl: profile.logoUrl,
+      coverUrl: profile.coverUrl,
+      storeSlug: 'store',
+      restaurantId: profile.id ? `AVG-${profile.id.slice(0, 4)}` : 'AVG-1025',
+      storeUrl: 'https://aviorego.com.ng/store',
     };
   }
 
@@ -154,12 +155,29 @@ export class MerchantDashboardController {
       coverUrl = uploadResult?.secure_url;
     }
 
+    // Resolve landmark coordinates if a landmarkId is passed from the modal
+    let latitude = existingProfile?.latitude;
+    let longitude = existingProfile?.longitude;
+
+    if (body.landmarkId) {
+      const landmark = await this.prisma.landmark.findUnique({
+        where: { id: body.landmarkId },
+      });
+      if (landmark) {
+        latitude = landmark.latitude;
+        longitude = landmark.longitude;
+      }
+    }
+
     const updatedProfile = await this.prisma.merchantProfile.upsert({
       where: { userId },
       update: {
         businessName: body.storeName,
         phone: body.phone,
         address: body.streetAddress || body.address,
+        landmarkId: body.landmarkId || undefined,
+        ...(latitude !== null && latitude !== undefined && { latitude }),
+        ...(longitude !== null && longitude !== undefined && { longitude }),
         description: body.description,
         logoUrl: logoUrl || "",
         coverUrl: coverUrl || "",
@@ -169,6 +187,9 @@ export class MerchantDashboardController {
         businessName: body.storeName,
         phone: body.phone,
         address: body.streetAddress || body.address,
+        landmarkId: body.landmarkId || undefined,
+        latitude: latitude || null,
+        longitude: longitude || null,
         description: body.description,
         logoUrl: logoUrl || "",
         coverUrl: coverUrl || "",
@@ -182,6 +203,8 @@ export class MerchantDashboardController {
       storeName: updatedProfile.businessName,
       phone: updatedProfile.phone,
       address: updatedProfile.address,
+      latitude: updatedProfile.latitude,
+      longitude: updatedProfile.longitude,
       description: updatedProfile.description,
       logoUrl: updatedProfile.logoUrl || "",
       coverUrl: updatedProfile.coverUrl || "",
@@ -189,7 +212,6 @@ export class MerchantDashboardController {
       storeUrl: `https://aviorego.com.ng/${slug}`
     };
   }
-
 
   @Get('hours')
   async getHours(@Req() req: any) {

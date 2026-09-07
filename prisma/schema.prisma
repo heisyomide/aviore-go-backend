@@ -415,6 +415,7 @@ model Landmark {
   name        String
   aliases     String[]
   description String?
+  merchants   MerchantProfile[]
   latitude    Float
   longitude   Float
   isActive    Boolean  @default(true) @map("is_active")
@@ -713,6 +714,11 @@ model MerchantProfile {
   cuisineType  String?
   foodOrders   FoodOrder[]
   phone        String?
+
+  // Location & Landmark relation
+
+  landmarkId   String?
+  landmark     Landmark?    @relation(fields: [landmarkId], references: [id])
   merchantType MerchantType @default(FOOD)
   reviews      Review[]     @relation("MerchantReviews")
   // Location details (Step 2)

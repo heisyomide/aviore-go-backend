@@ -24,6 +24,7 @@ import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { FoodPricingService } from 'src/pricing/food-pricing.service';
 
 const QRCode = require('qrcode');
 
@@ -37,6 +38,7 @@ export class FlutterwaveService {
     private readonly http: HttpService,
     private readonly notificationService: NotificationService,
     private readonly dispatchService: DispatchService,
+private readonly foodPricingService: FoodPricingService,
   ) {}
 
   private getSecretKey(): string {
@@ -142,166 +144,304 @@ export class FlutterwaveService {
     }
   }
 
-async initializePayment(
-    dto: InitializePaymentDto & {
-      bookingId?: string;
-      eventId?: string;
-      routeId?: string;
-      pickupPointId?: string;
-      tripId?: string;
-      amount?: number;
-      cartCheckout?: boolean;
-      cartId?: string;
-      items?: Array<{
-        quantity: number;
-        price?: number;
-        foodItem?: { price: number; name: string };
-      }>;
-    },
-    userId?: string,
-  ) {
-    const { shipmentId, bookingId, eventId, routeId, pickupPointId, tripId, amount, email, name, redirectUrl, cartCheckout } = dto;
+// Inside FlutterwaveService constructor, inject your FoodPricingService:
+// constructor(..., private readonly foodPricingService: FoodPricingService) {}
 
-    let rawTotal = 0;
-    let resolvedCustomerId: string | null = userId || null;
-    let description = '';
-    let metaPayload: any = {};
+async initializePayment(dto: InitializePaymentDto, userId?: string) {
+    const { 
+      shipmentId, 
+      bookingId, 
+      eventId, 
+      routeId, 
+      pickupPointId, 
+      tripId, 
+      amount, 
+      email, 
+      name, 
+      redirectUrl, 
+      cartCheckout 
+    } = dto as any;
 
-    if (shipmentId) {
-      const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
-      if (!shipment) throw new NotFoundException('SHIPMENT_NOT_FOUND');
+    let rawTotal = 0;
+    let resolvedCustomerId: string | null = userId || null;
+    let description = '';
+    let metaPayload: Record<string, any> = {};
+    let pricingDetails: any = null;
 
-      rawTotal = Number(shipment.totalPrice);
-      resolvedCustomerId = shipment.customerId;
-      description = `Payment for Shipment #${shipment.id.slice(-6).toUpperCase()}`;
-      metaPayload = { shipmentId: shipment.id };
-    } else if (bookingId) {
-      const booking = await this.prisma.eventBooking.findUnique({ where: { id: bookingId } });
-      if (!booking) throw new NotFoundException('BOOKING_NOT_FOUND');
+    if (shipmentId) {
+      const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
+      if (!shipment) throw new NotFoundException('SHIPMENT_NOT_FOUND');
 
-      rawTotal = Number(booking.amountPaid || 0);
-      resolvedCustomerId = booking.customerId;
-      description = `Payment for Transit Booking #${booking.id.slice(-6).toUpperCase()}`;
-      metaPayload = { bookingId: booking.id };
-    } else if (eventId && routeId && tripId) {
-      const route = await this.prisma.eventRoute.findUnique({ where: { id: routeId } });
-      if (!route) throw new NotFoundException('ROUTE_NOT_FOUND');
+      rawTotal = Number(shipment.totalPrice);
+      resolvedCustomerId = shipment.customerId;
+      description = `Payment for Shipment #${shipment.id.slice(-6).toUpperCase()}`;
+      metaPayload = { shipmentId: shipment.id };
+    } else if (bookingId) {
+      const booking = await this.prisma.eventBooking.findUnique({ where: { id: bookingId } });
+      if (!booking) throw new NotFoundException('BOOKING_NOT_FOUND');
 
-      rawTotal = Number(amount || route.price);
-      description = `Payment for Event Transit Booking`;
+      rawTotal = Number(booking.amountPaid || 0);
+      resolvedCustomerId = booking.customerId;
+      description = `Payment for Transit Booking #${booking.id.slice(-6).toUpperCase()}`;
+      metaPayload = { bookingId: booking.id };
+    } else if (eventId && routeId && tripId) {
+      const route = await this.prisma.eventRoute.findUnique({ where: { id: routeId } });
+      if (!route) throw new NotFoundException('ROUTE_NOT_FOUND');
 
-      if (!resolvedCustomerId && email) {
-        const foundUser = await this.prisma.user.findUnique({ where: { email } });
-        if (foundUser) resolvedCustomerId = foundUser.id;
-      }
+      rawTotal = Number(amount || route.price);
+      description = `Payment for Event Transit Booking`;
 
-      if (!resolvedCustomerId) {
-        throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
-      }
+      if (!resolvedCustomerId && email) {
+        const foundUser = await this.prisma.user.findUnique({ where: { email } });
+        if (foundUser) resolvedCustomerId = foundUser.id;
+      }
 
-      metaPayload = {
-        type: 'EVENT_BOOKING',
-        eventId,
-        routeId,
-        pickupPointId: pickupPointId || '',
-        tripId,
-        amountPaid: rawTotal,
-        customerId: resolvedCustomerId,
-      };
-    } else if (cartCheckout) {
-      if (!resolvedCustomerId && email) {
-        const foundUser = await this.prisma.user.findUnique({ where: { email } });
-        if (foundUser) resolvedCustomerId = foundUser.id;
-      }
+      if (!resolvedCustomerId) {
+        throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
+      }
 
-      let cartItems: any[] = [];
-      let activeCartId: string = dto.cartId || 'direct-checkout';
+      metaPayload = {
+        type: 'EVENT_BOOKING',
+        eventId,
+        routeId,
+        pickupPointId: pickupPointId || '',
+        tripId,
+        amountPaid: rawTotal,
+        customerId: resolvedCustomerId,
+      };
+    } else if (cartCheckout) {
+      if (!resolvedCustomerId && email) {
+        const foundUser = await this.prisma.user.findUnique({ where: { email } });
+        if (foundUser) resolvedCustomerId = foundUser.id;
+      }
 
-      // 1. Try fetching items from database cart
-      if (resolvedCustomerId) {
-        const dbCart = await this.prisma.cart.findUnique({
-          where: { userId: resolvedCustomerId },
-          include: { 
-            items: { 
-              include: { foodItem: true } 
-            } 
-          },
-        });
-        if (dbCart && dbCart.items && dbCart.items.length > 0) {
-          cartItems = dbCart.items;
-          activeCartId = dbCart.id;
-        }
-      }
+      if (!resolvedCustomerId) {
+        throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
+      }
 
-      // 2. Fallback: If DB cart is empty, use items passed directly from frontend payload
-      if (cartItems.length === 0 && dto.items && Array.isArray(dto.items)) {
-        cartItems = dto.items;
-      }
+// 1. Fetch user DB Cart & merchant association
+      const dbCart = await this.prisma.cart.findUnique({
+        where: { userId: resolvedCustomerId },
+        include: { 
+          items: { 
+            include: { foodItem: true } 
+          } 
+        },
+      });
 
-      if (!cartItems || cartItems.length === 0) {
-        throw new BadRequestException('CART_IS_EMPTY');
-      }
+      if (!dbCart || !dbCart.items || dbCart.items.length === 0) {
+        throw new BadRequestException('CART_IS_EMPTY');
+      }
 
-      const subtotal = cartItems.reduce(
-        (acc: number, item: any) => {
-          const itemPrice = Number(item.foodItem?.price || item.price || 0);
-          const quantity = Number(item.quantity || 1);
-          return acc + itemPrice * quantity;
-        },
-        0,
-      );
-      
-      const deliveryFee = 1200;
-      const serviceFee = 300;
-      rawTotal = subtotal + deliveryFee + serviceFee;
+      const merchantId = dbCart.items[0].foodItem?.merchantId;
+      if (!merchantId) {
+        throw new BadRequestException('MERCHANT_NOT_FOUND_FOR_CART');
+      }
 
-      description = `Payment for Food Cart Order (${cartItems.length} items)`;
-      metaPayload = { 
-        type: 'FOOD_CART_CHECKOUT', 
-        customerId: resolvedCustomerId || 'guest',
-        cartId: activeCartId,
-        amountPaid: rawTotal 
-      };
-    } else {
-      throw new BadRequestException('Invalid payment parameters provided');
-    }
+      // Fetch merchant profile for pickup coordinates
+      const merchant = await this.prisma.merchantProfile.findUnique({
+        where: { id: merchantId },
+      });
 
-    if (!rawTotal || rawTotal <= 0) {
-      throw new BadRequestException('PAYMENT_AMOUNT_INVALID');
-    }
+      if (!merchant || merchant.latitude == null || merchant.longitude == null) {
+        throw new BadRequestException('MERCHANT_COORDINATES_REQUIRED');
+      }
 
-    const txRef = `AVR-${randomUUID()}`;
-    const frontendUrl = this.config.get<string>('FRONTEND_URL') || process.env.FRONTEND_URL || 'http://localhost:3000';
-    const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
+      // 2. Fetch user's DEFAULT saved delivery address
+      const defaultAddress = await this.prisma.savedAddress.findFirst({
+        where: { userId: resolvedCustomerId, isDefault: true },
+      }) || await this.prisma.savedAddress.findFirst({
+        where: { userId: resolvedCustomerId },
+      });
 
-    const payload = {
-      tx_ref: txRef,
-      amount: rawTotal,
-      currency: 'NGN',
-      redirect_url: finalRedirectUrl,
-      customer: {
-        email: email || 'customer@aviorego.com.ng',
-        name: name || 'Valued Customer',
-      },
-      customizations: {
-        title: 'Pay AVIORÈ',
-        description,
-      },
-      meta: metaPayload,
-    };
+      if (!defaultAddress || defaultAddress.latitude == null || defaultAddress.longitude == null) {
+        throw new BadRequestException('DEFAULT_ADDRESS_WITH_COORDINATES_REQUIRED');
+      }
 
-    try {
-      const response = await axios.post('https://api.flutterwave.com/v3/payments', payload, { headers: this.headers });
-      const paymentLink = response.data?.data?.link;
-      if (!paymentLink) throw new Error('PAYMENT_LINK_NOT_GENERATED');
+      // Calculate food subtotal from cart items
+      const foodSubtotal = dbCart.items.reduce(
+        (sum, item) => sum + Number(item.foodItem.price) * item.quantity,
+        0,
+      );
 
-      return { link: paymentLink };
-    } catch (error: any) {
-      const flwErrorMessage = error.response?.data?.message || error.message;
-      this.logger.error(`PAYMENT_INIT_ERROR: ${flwErrorMessage}`);
-      throw new InternalServerErrorException(`PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`);
-    }
-  }
+      // 3. Authoritative Pricing Engine invocation
+      pricingDetails = await this.foodPricingService.calculateFoodOrderPricing({
+        pickupLat: Number(merchant.latitude),
+        pickupLng: Number(merchant.longitude),
+        destinationLat: Number(defaultAddress.latitude),
+        destinationLng: Number(defaultAddress.longitude),
+        foodSubtotal,
+      });
+
+      rawTotal = pricingDetails.totalPayable;
+
+      description = `Payment for Food Cart Order (${dbCart.items.length} items)`;
+      metaPayload = { 
+        type: 'FOOD_CART_CHECKOUT', 
+        customerId: resolvedCustomerId,
+        cartId: dbCart.id,
+        merchantId,
+        subtotal: pricingDetails.subtotal,
+        deliveryFee: pricingDetails.deliveryFee,
+        serviceFee: pricingDetails.splits.foodPlatformSpeed || pricingDetails.splits.foodPlatformShare,
+        distanceKm: pricingDetails.distanceKm,
+        amountPaid: rawTotal 
+      };
+    } else {
+      throw new BadRequestException('Invalid payment parameters provided');
+    }
+
+    if (!rawTotal || rawTotal <= 0) {
+      throw new BadRequestException('PAYMENT_AMOUNT_INVALID');
+    }
+
+    const txRef = `AVR-${randomUUID()}`;
+    const frontendUrl = this.config.get<string>('FRONTEND_URL') || process.env.FRONTEND_URL || 'http://localhost:3000';
+    const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
+
+    const payload = {
+      tx_ref: txRef,
+      amount: rawTotal,
+      currency: 'NGN',
+      redirect_url: finalRedirectUrl,
+      customer: {
+        email: email || 'customer@aviorego.com.ng',
+        name: name || 'Valued Customer',
+      },
+      customizations: {
+        title: 'Pay AVIORÈ',
+        description,
+      },
+      meta: metaPayload,
+    };
+
+    try {
+      const response = await axios.post('https://api.flutterwave.com/v3/payments', payload, { headers: this.headers });
+      const paymentLink = response.data?.data?.link;
+      if (!paymentLink) throw new Error('PAYMENT_LINK_NOT_GENERATED');
+
+      return { link: paymentLink };
+    } catch (error: any) {
+      const flwErrorMessage = error.response?.data?.message || error.message;
+      this.logger.error(`PAYMENT_INIT_ERROR: ${flwErrorMessage}`);
+      throw new InternalServerErrorException(`PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`);
+    }
+  }
+
+  public async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
+    const customerId = meta.customerId;
+    const cartId = meta.cartId;
+    const merchantId = meta.merchantId;
+    const totalPaid = Number(paymentData.amount);
+    const expectedAmount = Number(meta.amountPaid);
+
+    if (Math.abs(totalPaid - expectedAmount) > 1) {
+      this.logger.error(`[PAYMENT_MISMATCH] Paid amount (${totalPaid}) does not match expected authoritative amount (${expectedAmount}) for tx_ref ${paymentData.tx_ref}`);
+      return;
+    }
+
+    if (!customerId || customerId === 'guest' || !merchantId) {
+      this.logger.warn(`[CART_CHECKOUT] Skipping order creation: missing customerId or merchantId for tx_ref ${paymentData.tx_ref}`);
+      return;
+    }
+
+    const cart = await this.prisma.cart.findUnique({
+      where: { id: cartId },
+      include: { items: { include: { foodItem: true } } },
+    });
+
+    if (!cart || cart.items.length === 0) {
+      this.logger.warn(`[CART_CHECKOUT] Cart empty or not found during fulfillment for customer ${customerId}`);
+      return;
+    }
+
+    const [merchant, customer, defaultAddress] = await Promise.all([
+      this.prisma.merchantProfile.findUnique({ where: { id: merchantId } }),
+      this.prisma.user.findUnique({ where: { id: customerId } }),
+      this.prisma.savedAddress.findFirst({ where: { userId: customerId, isDefault: true } }),
+    ]);
+
+    const subTotal = Number(meta.subtotal);
+    const deliveryFee = Number(meta.deliveryFee);
+    const serviceFee = Number(meta.serviceFee || 0);
+    const distanceKm = Number(meta.distanceKm || 0);
+    
+    const orderNumber = `AVR-FOOD-${randomUUID().substring(0, 8).toUpperCase()}`;
+    const trackingCode = `TRK-${randomUUID().substring(0, 8).toUpperCase()}`;
+
+    const deliveryAddress = defaultAddress 
+      ? `${defaultAddress.street}, ${defaultAddress.city}, ${defaultAddress.state}` 
+      : customer?.streetAddress || 'Default Customer Address';
+    const pickupAddress = merchant?.address || 'Merchant Location';
+    const recipientName = `${customer?.firstName || 'Customer'} ${customer?.lastName || ''}`.trim();
+    const recipientPhone = customer?.phoneNumber || '0000000000';
+
+    await this.prisma.$transaction(async (tx) => {
+      const shipment = await tx.shipment.create({
+        data: {
+          trackingCode,
+          customerId,
+          merchantId,
+          status: ShipmentStatus.PENDING,
+          tier: DeliveryTier.STANDARD,
+          deliveryType: DeliveryType.FOOD,
+          packageCategory: PackageCategory.SMALL_PARCEL,
+          weightRange: WeightRange.UNDER_1KG,
+          regionType: RegionType.INTRA_CITY,
+          pickupAddress,
+          pickupLat: merchant?.latitude || 0.0,
+          pickupLng: merchant?.longitude || 0.0,
+          destinationAddress: deliveryAddress,
+          destinationLat: Number(defaultAddress?.latitude || 0.0),
+          destinationLng: Number(defaultAddress?.longitude || 0.0),
+          recipient: recipientName,
+          recipientPhone,
+          verificationPin: Math.floor(1000 + Math.random() * 9000).toString(),
+          baseFee: subTotal,
+          pickupDistFee: 0,
+          deliveryDistFee: deliveryFee,
+          extraCharges: serviceFee,
+          totalPrice: totalPaid,
+          riderShare: 0,
+          platformShare: serviceFee,
+          distanceKm,
+          estimatedMinutes: Math.round(distanceKm * 3) + 15,
+        },
+      });
+
+      await tx.foodOrder.create({
+        data: {
+          orderNumber,
+          customerId,
+          merchantId,
+          shipmentId: shipment.id,
+          status: FoodOrderStatus.PENDING,
+          deliveryStatus: FoodDeliveryStatus.NOT_ASSIGNED,
+          subTotal,
+          deliveryFee,
+          serviceFee,
+          totalPrice: totalPaid,
+          deliveryAddress,
+          deliveryLat: Number(defaultAddress?.latitude || 0.0),
+          deliveryLng: Number(defaultAddress?.longitude || 0.0),
+          items: {
+            create: cart.items.map((item: any) => ({
+              foodItemId: item.foodItemId,
+              name: item.foodItem?.name || 'Food Item',
+              price: Number(item.foodItem?.price || 0),
+              quantity: item.quantity,
+              selectedAddOns: item.selectedAddOns ?? undefined,
+            })),
+          },
+        },
+      });
+
+      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+    });
+
+    this.logger.log(`[FOOD_ORDER_CREATED] Structured Food Order ${orderNumber} successfully placed for customer ${customerId}`);
+  }
+
   
  async verifyPayment(transactionId: string) {
     try {
@@ -418,137 +558,7 @@ async initializePayment(
     });
   }
 
- private async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
-    const customerId = meta.customerId;
-    const cartId = meta.cartId;
-    const totalPaid = Number(paymentData.amount);
 
-    if (!customerId || customerId === 'guest') {
-      this.logger.warn(`[CART_CHECKOUT] Skipping order creation: missing customerId for tx_ref ${paymentData.tx_ref}`);
-      return;
-    }
-
-    // 1. Fetch cart items using cartId or fallback to user's cart
-    let cartItems: any[] = [];
-    let merchantId: string | null = null;
-
-    if (cartId && cartId !== 'direct-checkout') {
-      const cart = await this.prisma.cart.findUnique({
-        where: { id: cartId },
-        include: { items: { include: { foodItem: true } } },
-      });
-      if (cart?.items.length) {
-        cartItems = cart.items;
-        merchantId = cart.items[0].foodItem?.merchantId || null;
-      }
-    }
-
-    if (cartItems.length === 0) {
-      const userCart = await this.prisma.cart.findUnique({
-        where: { userId: customerId },
-        include: { items: { include: { foodItem: true } } },
-      });
-      if (userCart?.items.length) {
-        cartItems = userCart.items;
-        merchantId = userCart.items[0].foodItem?.merchantId || null;
-      }
-    }
-
-    if (cartItems.length === 0 || !merchantId) {
-      this.logger.warn(`[CART_CHECKOUT] No items or merchant found to fulfill for customer ${customerId}`);
-      return;
-    }
-
-    // 2. Fetch merchant and customer details to populate strict schema fields
-    const [merchant, customer] = await Promise.all([
-      this.prisma.merchantProfile.findUnique({ where: { id: merchantId } }),
-      this.prisma.user.findUnique({ where: { id: customerId } }),
-    ]);
-
-    const subTotal = cartItems.reduce(
-      (acc: number, item: any) => acc + Number(item.foodItem?.price || item.price || 0) * Number(item.quantity || 1),
-      0,
-    );
-
-    const deliveryFee = 1200;
-    const serviceFee = 300;
-    const orderNumber = `AVR-FOOD-${randomUUID().substring(0, 8).toUpperCase()}`;
-    const trackingCode = `TRK-${randomUUID().substring(0, 8).toUpperCase()}`;
-
-    const deliveryAddress = customer?.streetAddress || 'Default Customer Address';
-    const pickupAddress = merchant?.address || 'Merchant Location';
-    const recipientName = `${customer?.firstName || 'Customer'} ${customer?.lastName || ''}`.trim();
-    const recipientPhone = customer?.phoneNumber || '0000000000';
-
-    // 3. Execute database operations within a single transaction
-    await this.prisma.$transaction(async (tx) => {
-      const shipment = await tx.shipment.create({
-        data: {
-          trackingCode,
-          customerId,
-          merchantId,
-          status: ShipmentStatus.PENDING,
-          tier: DeliveryTier.STANDARD,
-          deliveryType: DeliveryType.FOOD,
-          packageCategory: PackageCategory.SMALL_PARCEL,
-          weightRange: WeightRange.UNDER_1KG,
-          regionType: RegionType.INTRA_CITY,
-          pickupAddress,
-          pickupLat: merchant?.latitude || 0.0,
-          pickupLng: merchant?.longitude || 0.0,
-          destinationAddress: deliveryAddress,
-          destinationLat: 0.0,
-          destinationLng: 0.0,
-          recipient: recipientName,
-          recipientPhone,
-          verificationPin: Math.floor(1000 + Math.random() * 9000).toString(),
-          baseFee: subTotal,
-          pickupDistFee: 0,
-          deliveryDistFee: deliveryFee,
-          extraCharges: serviceFee,
-          totalPrice: totalPaid,
-          riderShare: 0,
-          platformShare: serviceFee,
-          distanceKm: 0,
-          estimatedMinutes: 30,
-        },
-      });
-
-      await tx.foodOrder.create({
-        data: {
-          orderNumber,
-          customerId,
-          merchantId,
-          shipmentId: shipment.id,
-          status: FoodOrderStatus.PENDING,
-          deliveryStatus: FoodDeliveryStatus.NOT_ASSIGNED,
-          subTotal,
-          deliveryFee,
-          serviceFee,
-          totalPrice: totalPaid,
-          deliveryAddress,
-          deliveryLat: 0.0,
-          deliveryLng: 0.0,
-          items: {
-            create: cartItems.map((item: any) => ({
-              foodItemId: item.foodItemId,
-              name: item.foodItem?.name || 'Food Item',
-              price: Number(item.foodItem?.price || 0),
-              quantity: item.quantity,
-              selectedAddOns: item.selectedAddOns ?? undefined,
-            })),
-          },
-        },
-      });
-
-      const userCart = await tx.cart.findUnique({ where: { userId: customerId } });
-      if (userCart) {
-        await tx.cartItem.deleteMany({ where: { cartId: userCart.id } });
-      }
-    });
-
-    this.logger.log(`[FOOD_ORDER_CREATED] Structured Food Order ${orderNumber} successfully placed for customer ${customerId}`);
-  }
 
   private async handleShipmentVerification(paymentData: any, shipmentId: string, isSuccessful: boolean) {
     if (!isSuccessful) {

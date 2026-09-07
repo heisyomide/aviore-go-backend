@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { FoodPricingService } from '../pricing/food-pricing.service';
+import { SavedAddress } from '@prisma/client';
 
 @Injectable()
 export class CartService {
@@ -9,21 +10,32 @@ export class CartService {
     private readonly foodPricingService: FoodPricingService,
   ) {}
 
-  async getCart(userId: string, userLat?: number, userLng?: number) {
-    if (!userId) {
-      return { 
-        items: [], 
-        subtotal: 0, 
-        deliveryFee: 0, 
-        total: 0, 
-        distanceKm: 0, 
-        estimatedMinutes: 0, 
-        breakdown: { baseFee: 500, deliveryDistanceFee: 0 } 
-      };
+  async getCart(userId: string) {
+    console.log('========== ADDRESS RESOLUTION DEBUG ==========');
+    console.log('Incoming userId passed to getCart():', JSON.stringify(userId));
+
+    // Secure Address Resolution: Never fall back to another user's address
+    let defaultAddress: SavedAddress | null = null;
+    const isAnonymous = !userId || userId === 'anonymous-guest-user';
+
+    if (!isAnonymous) {
+      defaultAddress = await this.prisma.savedAddress.findFirst({
+        where: { userId, isDefault: true },
+      }) || await this.prisma.savedAddress.findFirst({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+      });
     }
 
+    console.log('Resolved defaultAddress record from DB:', defaultAddress);
+    console.log('==============================================');
+
+    const userLat = defaultAddress?.latitude != null ? Number(defaultAddress.latitude) : null;
+    const userLng = defaultAddress?.longitude != null ? Number(defaultAddress.longitude) : null;
+
+    const targetUserId = userId || 'anonymous-guest-user';
     let cart = await this.prisma.cart.findUnique({
-      where: { userId },
+      where: { userId: targetUserId },
       include: {
         items: {
           include: { foodItem: { include: { merchant: true } } }
@@ -33,7 +45,7 @@ export class CartService {
 
     if (!cart) {
       cart = await this.prisma.cart.create({
-        data: { userId },
+        data: { userId: targetUserId },
         include: { items: { include: { foodItem: { include: { merchant: true } } } } }
       });
     }
@@ -51,6 +63,13 @@ export class CartService {
     if (cart.items.length > 0 && cart.items[0].foodItem?.merchant) {
       const merchant = cart.items[0].foodItem.merchant;
       
+      console.log('========== FOOD DELIVERY DEBUG ==========');
+      console.log('CUSTOMER DEFAULT ADDRESS:', defaultAddress);
+      console.log(`customerLat: ${userLat}, customerLng: ${userLng}`);
+      console.log('MERCHANT BUSINESS:', merchant.businessName);
+      console.log(`merchantLat: ${merchant.latitude}, merchantLng: ${merchant.longitude}`);
+      console.log('==========================================');
+
       if (
         merchant.latitude != null &&
         merchant.longitude != null &&
@@ -60,8 +79,8 @@ export class CartService {
         const pricing = this.foodPricingService.calculateFoodOrderPricing({
           pickupLat: Number(merchant.latitude),
           pickupLng: Number(merchant.longitude),
-          destinationLat: Number(userLat),
-          destinationLng: Number(userLng),
+          destinationLat: userLat,
+          destinationLng: userLng,
           foodSubtotal: subtotal,
         });
         
@@ -86,11 +105,12 @@ export class CartService {
     };
   }
 
-  async addItemToCart(userId: string, foodItemId: string, quantity: number = 1, userLat?: number, userLng?: number) {
+  async addItemToCart(userId: string, foodItemId: string, quantity: number = 1) {
+    const targetUserId = userId || 'anonymous-guest-user';
     const cart = await this.prisma.cart.upsert({
-      where: { userId },
+      where: { userId: targetUserId },
       update: {},
-      create: { userId },
+      create: { userId: targetUserId },
     });
 
     const existingItem = await this.prisma.cartItem.findFirst({
@@ -108,12 +128,12 @@ export class CartService {
       });
     }
 
-    return this.getCart(userId, userLat, userLng);
+    return this.getCart(targetUserId);
   }
 
-  async updateQuantity(userId: string, cartItemId: string, quantity: number, userLat?: number, userLng?: number) {
+  async updateQuantity(userId: string, cartItemId: string, quantity: number) {
     if (quantity < 1) {
-      return this.removeCartItem(userId, cartItemId, userLat, userLng);
+      return this.removeCartItem(userId, cartItemId);
     }
 
     await this.prisma.cartItem.update({
@@ -121,13 +141,13 @@ export class CartService {
       data: { quantity },
     });
 
-    return this.getCart(userId, userLat, userLng);
+    return this.getCart(userId);
   }
 
-  async removeCartItem(userId: string, cartItemId: string, userLat?: number, userLng?: number) {
+  async removeCartItem(userId: string, cartItemId: string) {
     await this.prisma.cartItem.delete({
       where: { id: cartItemId }
     });
-    return this.getCart(userId, userLat, userLng);
+    return this.getCart(userId);
   }
 }

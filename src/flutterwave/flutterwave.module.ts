@@ -10,11 +10,13 @@ import { WalletService } from 'src/wallet/wallet.service';
 import { WalletController } from 'src/wallet/wallet.controller';
 import { NotificationModule } from 'src/notification/notification.module';
 import { DispatchModule } from 'src/dispatch/dispatch.module'; // 👈 1. Import DispatchModule
+import { PricingModule } from 'src/pricing/pricing.module';
 
 @Module({
   imports: [
     ConfigModule,
     NotificationModule,
+    PricingModule,
     DispatchModule, // 👈 2. Add DispatchModule to imports array
     HttpModule.register({
       timeout: 30000,

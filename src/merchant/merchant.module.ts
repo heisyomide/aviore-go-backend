@@ -6,9 +6,10 @@ import { MerchantDashboardService } from './merchant-dashboard.service';
 import { FlutterwaveModule } from 'src/flutterwave/flutterwave.module';
 import { UploadsModule } from 'src/rider-onboarding/uploads/upload.module';
 import { RiderOnboardingModule } from 'src/rider-onboarding/rider-onboarding.module';
+import { NotificationModule } from 'src/notification/notification.module';
 
 @Module({
-  imports: [FlutterwaveModule, UploadsModule, RiderOnboardingModule],
+  imports: [FlutterwaveModule, UploadsModule, RiderOnboardingModule, NotificationModule],
   controllers: [MerchantController, MerchantDashboardController],
   providers: [MerchantService, MerchantDashboardService],
   exports: [MerchantService],

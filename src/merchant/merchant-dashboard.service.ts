@@ -1,10 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { CreateMenuItemDto, UpdateMenuItemDto } from './menu.dto';
+import { NotificationService } from 'src/notification/notification.service';
 
 @Injectable()
 export class MerchantDashboardService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService,
+    private readonly notificationService: NotificationService,
+  ) {}
 
 async getDashboardOverview(userId: string) {
     const profile = await this.prisma.merchantProfile.findUnique({
@@ -55,9 +58,29 @@ async getDashboardOverview(userId: string) {
     };
   }
 
+private getCurrentDayName(): string {
+    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const now = new Date();
+    return days[now.getDay()];
+  }
+
   async toggleStoreStatus(userId: string, isOpen: boolean) {
-    const profile = await this.prisma.merchantProfile.findUnique({ where: { userId } });
+    const profile = await this.prisma.merchantProfile.findUnique({ 
+      where: { userId },
+      include: { operatingHours: true },
+    });
     if (!profile) throw new NotFoundException('Merchant profile not found');
+
+    if (isOpen) {
+      const currentDay = this.getCurrentDayName().toUpperCase();
+      const todayHour = profile.operatingHours.find(
+        (h) => h.dayOfWeek.toUpperCase() === currentDay
+      );
+
+      if (todayHour && todayHour.isClosed) {
+        throw new BadRequestException(`Cannot go online: Your operating hours show you are closed on ${currentDay}.`);
+      }
+    }
 
     return this.prisma.merchantProfile.update({
       where: { id: profile.id },
@@ -118,31 +141,67 @@ async getDashboardOverview(userId: string) {
   }
 
 async createMenuItem(userId: string, dto: CreateMenuItemDto) {
-    const profile = await (this.prisma as any).merchantProfile.findUnique({
-      where: { userId },
-    });
-    if (!profile) throw new NotFoundException('Merchant profile not found');
+  const profile = await (this.prisma as any).merchantProfile.findUnique({
+    where: { userId },
+  });
+  if (!profile) throw new NotFoundException('Merchant profile not found');
 
-    // Enforce rigid taxonomy rule: Subcategory must exist
-    const subcategory = await (this.prisma as any).foodSubcategory.findUnique({
-      where: { id: dto.subcategoryId },
-    });
-    if (!subcategory) {
-      throw new BadRequestException('Selected subcategory taxonomy is invalid or does not exist');
-    }
-
-    return (this.prisma as any).foodItem.create({
-      data: {
-        merchantId: profile.id,
-        name: dto.name,
-        price: dto.price,
-        subcategoryId: dto.subcategoryId,
-        imageUrl: dto.imageUrl || '',
-        isAvailable: dto.available ?? true,
-        category: subcategory.name, // Satisfies the required Prisma string field
-      },
-    });
+  // Enforce rigid taxonomy rule: Subcategory must exist
+  const subcategory = await (this.prisma as any).foodSubcategory.findUnique({
+    where: { id: dto.subcategoryId },
+  });
+  if (!subcategory) {
+    throw new BadRequestException('Selected subcategory taxonomy is invalid or does not exist');
   }
+
+  // 1. Create the menu item
+  const menuItem = await (this.prisma as any).foodItem.create({
+    data: {
+      merchantId: profile.id,
+      name: dto.name,
+      price: dto.price,
+      subcategoryId: dto.subcategoryId,
+      imageUrl: dto.imageUrl || '',
+      isAvailable: dto.available ?? true,
+      category: subcategory.name,
+    },
+  });
+
+  // 2. 🚀 Dispatch notification to users (e.g., all active customers or followers)
+  try {
+    // Fetch customers to notify (e.g., users with role CUSTOMER)
+    const customers = await this.prisma.user.findMany({
+      where: { role: 'CUSTOMER' },
+      select: { id: true },
+      take: 50, // Limit batch size to optimize performance
+    });
+
+    const merchantName = profile.businessName || profile.name || 'A merchant';
+    const title = `🍽️ New Menu Item from ${merchantName}!`;
+    const body = `Check out "${dto.name}" now available on Aviorè Go. Tap to order!`;
+
+    // Send push/in-app notification asynchronously to targeted users
+    await Promise.all(
+      customers.map((customer) =>
+        this.notificationService.dispatch({
+          type: 'SYSTEM_ALERT' as any,
+          userId: customer.id,
+          title,
+          body,
+          data: {
+            url: `/merchant/${profile.id}`, // Deep link to merchant store
+            itemId: menuItem.id,
+          },
+        }).catch((err) => console.error(`Failed to notify user ${customer.id}:`, err))
+      ),
+    );
+  } catch (notifErr) {
+    console.error('[Menu Notification Error]:', notifErr);
+    // Non-blocking: Do not fail menu creation if notification batch fails
+  }
+
+  return menuItem;
+}
 
 async updateMenuItem(userId: string, id: string, dto: UpdateMenuItemDto) {
   const profile = await (this.prisma as any).merchantProfile.findUnique({

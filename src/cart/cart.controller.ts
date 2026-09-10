@@ -1,8 +1,8 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, UseGuards, BadRequestException } from '@nestjs/common';
 import { CartService } from './cart.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // Adjust path to your auth guard
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
-@UseGuards(JwtAuthGuard) // <--- Add this guard here
+@UseGuards(JwtAuthGuard)
 @Controller('cart')
 export class CartController {
   constructor(private readonly cartService: CartService) {}
@@ -12,36 +12,53 @@ export class CartController {
   }
 
   @Get()
-  getCart(@Req() req) {
+  getCart(
+    @Req() req,
+    @Query('merchantId') merchantId: string,
+  ) {
+    if (!merchantId) {
+      throw new BadRequestException('merchantId query parameter is required');
+    }
     const userId = this.resolveUserId(req);
-    return this.cartService.getCart(userId);
+    return this.cartService.getCart(userId, merchantId);
   }
 
   @Post('items')
   addItem(
     @Req() req, 
-    @Body() body: { foodItemId: string; quantity: number },
+    @Body() body: { merchantId: string; foodItemId: string; quantity: number },
   ) {
+    if (!body.merchantId) {
+      throw new BadRequestException('merchantId is required in request body');
+    }
     const userId = this.resolveUserId(req);
-    return this.cartService.addItemToCart(userId, body.foodItemId, body.quantity || 1);
+    return this.cartService.addItemToCart(userId, body.merchantId, body.foodItemId, body.quantity || 1);
   }
 
   @Patch('items/:cartItemId')
   updateQuantity(
     @Req() req,
+    @Query('merchantId') merchantId: string,
     @Param('cartItemId') cartItemId: string,
     @Body() body: { quantity: number },
   ) {
+    if (!merchantId) {
+      throw new BadRequestException('merchantId query parameter is required');
+    }
     const userId = this.resolveUserId(req);
-    return this.cartService.updateQuantity(userId, cartItemId, body.quantity);
+    return this.cartService.updateQuantity(userId, merchantId, cartItemId, body.quantity);
   }
 
   @Delete('items/:id')
   removeCartItem(
     @Req() req, 
+    @Query('merchantId') merchantId: string,
     @Param('id') itemId: string,
   ) {
+    if (!merchantId) {
+      throw new BadRequestException('merchantId query parameter is required');
+    }
     const userId = this.resolveUserId(req);
-    return this.cartService.removeCartItem(userId, itemId);
+    return this.cartService.removeCartItem(userId, merchantId, itemId);
   }
 }

@@ -19,10 +19,11 @@ async getHomePageData(
   );
 }
 
-// GET /storefront/food-items?category=local
-@Get('food-items')
-async getFoodItemsByCategory(@Query('category') category?: string) {
-  return this.storefrontService.getFoodItemsByCategory(category);
+
+// GET /storefront/restaurants?search=Query
+@Get('restaurants')
+async getAllFoodMerchants(@Query('search') search?: string) {
+  return this.storefrontService.getAllFoodMerchants(search);
 }
 
 @Get('categories')

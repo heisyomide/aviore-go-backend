@@ -769,25 +769,52 @@ model BankAccount {
 }
 
 model FoodItem {
-  id              String           @id @default(uuid())
+  id              String             @id @default(uuid())
   merchantId      String
-  merchant        MerchantProfile  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant        MerchantProfile    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   name            String
   description     String?
   subcategoryId   String?
-  subCategory     FoodSubcategory? @relation(fields: [subcategoryId], references: [id], onDelete: SetNull)
-  prepTime        String?          @default("20–30 min")
-  price           Float
+  subCategory     FoodSubcategory?   @relation(fields: [subcategoryId], references: [id], onDelete: SetNull)
+  prepTime        String?            @default("20–30 min")
+  price           Float              // Base price (e.g., price per portion)
   category        String
-  cartItems       CartItem[]
   imageUrl        String?
-  isAvailable     Boolean          @default(true)
+  isAvailable     Boolean            @default(true)
   prepTimeMinutes Int?
-  addOns          Json? // Stores variations and add-ons dynamically
-  createdAt       DateTime         @default(now())
+  
+  // Relations for the generic customization engine
+  customizationGroups CustomizationGroup[]
+  
+  cartItems       CartItem[]
+  createdAt       DateTime           @default(now())
   foodOrderItems  FoodOrderItem[]
 }
 
+model CustomizationGroup {
+  id           String                 @id @default(uuid())
+  foodItemId   String
+  foodItem     FoodItem               @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+  name         String                 // e.g., "Choose Soup", "Protein Options"
+  selectionType SelectionType         @default(OPTIONAL) // REQUIRED, OPTIONAL
+  minSelections Int                   @default(0)
+  maxSelections Int                   @default(1)
+  options      CustomizationOption[]
+}
+
+model CustomizationOption {
+  id          String             @id @default(uuid())
+  groupId     String
+  group       CustomizationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name        String             // e.g., "Gbegiri", "Beef"
+  price       Float              @default(0.0) // Additional price modifier
+  isAvailable Boolean            @default(true)
+}
+
+enum SelectionType {
+  REQUIRED
+  OPTIONAL
+}
 enum IdentityStatus {
   PENDING_VERIFICATION
   VERIFIED
@@ -858,11 +885,14 @@ model ChatMessage {
 }
 
 model Cart {
-  id        String     @id @default(uuid())
-  userId    String     @unique
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  items     CartItem[]
+  id         String     @id @default(uuid())
+  userId     String
+  merchantId String     // Scopes the cart to a specific restaurant/merchant
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  items      CartItem[]
+
+  @@unique([userId, merchantId]) // Ensures a user has only one active cart per restaurant
 }
 
 model CartItem {

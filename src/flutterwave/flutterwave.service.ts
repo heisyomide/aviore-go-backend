@@ -148,7 +148,7 @@ private readonly foodPricingService: FoodPricingService,
 // constructor(..., private readonly foodPricingService: FoodPricingService) {}
 
 async initializePayment(dto: InitializePaymentDto, userId?: string) {
-    const { 
+const { 
       shipmentId, 
       bookingId, 
       eventId, 
@@ -159,7 +159,8 @@ async initializePayment(dto: InitializePaymentDto, userId?: string) {
       email, 
       name, 
       redirectUrl, 
-      cartCheckout 
+      cartCheckout,
+      merchantId: dtoMerchantId
     } = dto as any;
 
     let rawTotal = 0;
@@ -219,9 +220,17 @@ async initializePayment(dto: InitializePaymentDto, userId?: string) {
         throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
       }
 
-// 1. Fetch user DB Cart & merchant association
+      if (!dtoMerchantId) {
+        throw new BadRequestException('MERCHANT_ID_REQUIRED_FOR_CART');
+      }
+
       const dbCart = await this.prisma.cart.findUnique({
-        where: { userId: resolvedCustomerId },
+        where: {
+          userId_merchantId: {
+            userId: resolvedCustomerId,
+            merchantId: dtoMerchantId,
+          },
+        },
         include: { 
           items: { 
             include: { foodItem: true } 
@@ -233,21 +242,16 @@ async initializePayment(dto: InitializePaymentDto, userId?: string) {
         throw new BadRequestException('CART_IS_EMPTY');
       }
 
-      const merchantId = dbCart.items[0].foodItem?.merchantId;
-      if (!merchantId) {
-        throw new BadRequestException('MERCHANT_NOT_FOUND_FOR_CART');
-      }
+      const resolvedMerchantId = dbCart.merchantId;
 
-      // Fetch merchant profile for pickup coordinates
       const merchant = await this.prisma.merchantProfile.findUnique({
-        where: { id: merchantId },
+        where: { id: resolvedMerchantId },
       });
 
       if (!merchant || merchant.latitude == null || merchant.longitude == null) {
         throw new BadRequestException('MERCHANT_COORDINATES_REQUIRED');
       }
 
-      // 2. Fetch user's DEFAULT saved delivery address
       const defaultAddress = await this.prisma.savedAddress.findFirst({
         where: { userId: resolvedCustomerId, isDefault: true },
       }) || await this.prisma.savedAddress.findFirst({
@@ -258,13 +262,11 @@ async initializePayment(dto: InitializePaymentDto, userId?: string) {
         throw new BadRequestException('DEFAULT_ADDRESS_WITH_COORDINATES_REQUIRED');
       }
 
-      // Calculate food subtotal from cart items
       const foodSubtotal = dbCart.items.reduce(
         (sum, item) => sum + Number(item.foodItem.price) * item.quantity,
         0,
       );
 
-      // 3. Authoritative Pricing Engine invocation
       pricingDetails = await this.foodPricingService.calculateFoodOrderPricing({
         pickupLat: Number(merchant.latitude),
         pickupLng: Number(merchant.longitude),
@@ -280,7 +282,7 @@ async initializePayment(dto: InitializePaymentDto, userId?: string) {
         type: 'FOOD_CART_CHECKOUT', 
         customerId: resolvedCustomerId,
         cartId: dbCart.id,
-        merchantId,
+        merchantId: resolvedMerchantId,
         subtotal: pricingDetails.subtotal,
         deliveryFee: pricingDetails.deliveryFee,
         serviceFee: pricingDetails.splits.foodPlatformSpeed || pricingDetails.splits.foodPlatformShare,

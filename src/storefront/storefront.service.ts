@@ -116,39 +116,26 @@ export class StorefrontService {
     return { merchants, foodItems };
   }
 
-async getFoodItemsByCategory(category?: string) {
-    if (!category || category === 'all') {
-      return this.prisma.foodItem.findMany({
-        where: { isAvailable: true },
-        take: 20,
-        include: {
-          merchant: { select: { id: true, businessName: true, address: true } },
-          subCategory: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-    }
-
-    // Split slug into words (e.g., "rice-rice-meals" -> ["rice", "meals"])
-    const searchTerms = category.replace(/-/g, ' ').split(' ').filter(Boolean);
-
-    return this.prisma.foodItem.findMany({
-      where: {
-        isAvailable: true,
-        OR: searchTerms.flatMap(term => [
-          { category: { contains: term, mode: 'insensitive' as const } },
-          { subCategory: { name: { contains: term, mode: 'insensitive' as const } } },
-          { subCategory: { slug: { contains: term, mode: 'insensitive' as const } } },
-        ]),
-      },
-      take: 20,
-      include: {
-        merchant: { select: { id: true, businessName: true, address: true } },
-        subCategory: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
+async getAllFoodMerchants(search?: string) {
+  return this.prisma.merchantProfile.findMany({
+    where: {
+      isOpen: true, // or remove this if you want to show closed restaurants too
+      ...(search ? {
+        OR: [
+          { businessName: { contains: search, mode: 'insensitive' as const } },
+          { address: { contains: search, mode: 'insensitive' as const } },
+          { cuisineType: { contains: search, mode: 'insensitive' as const } },
+        ]
+      } : {})
+    },
+    include: {
+      _count: {
+        select: { menuItems: true } // Matches your relation name 'menuItems' in MerchantProfile schema
+      }
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+}
 
   async getAvailableCategories() {
     const foodItems = await this.prisma.foodItem.findMany({

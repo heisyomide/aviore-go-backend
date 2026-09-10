@@ -146,7 +146,6 @@ async createMenuItem(userId: string, dto: CreateMenuItemDto) {
   });
   if (!profile) throw new NotFoundException('Merchant profile not found');
 
-  // Enforce rigid taxonomy rule: Subcategory must exist
   const subcategory = await (this.prisma as any).foodSubcategory.findUnique({
     where: { id: dto.subcategoryId },
   });
@@ -154,33 +153,57 @@ async createMenuItem(userId: string, dto: CreateMenuItemDto) {
     throw new BadRequestException('Selected subcategory taxonomy is invalid or does not exist');
   }
 
-  // 1. Create the menu item
-  const menuItem = await (this.prisma as any).foodItem.create({
+  // Use a Prisma transaction to save the item and its option groups/options cleanly
+const menuItem = await this.prisma.$transaction(async (tx: any) => {
+  return tx.foodItem.create({
     data: {
       merchantId: profile.id,
       name: dto.name,
+      description: dto.description,
       price: dto.price,
       subcategoryId: dto.subcategoryId,
       imageUrl: dto.imageUrl || '',
       isAvailable: dto.available ?? true,
       category: subcategory.name,
+      customizationGroups: dto.customizationGroups?.length ? {
+        create: dto.customizationGroups.map((group) => ({
+          name: group.name,
+          selectionType: group.selectionType,
+          minSelections: group.minSelections,
+          maxSelections: group.maxSelections,
+          options: {
+            create: group.options.map((opt) => ({
+              name: opt.name,
+              price: opt.price,
+              isAvailable: opt.isAvailable ?? true,
+            })),
+          },
+        })),
+      } : undefined,
+    },
+    include: {
+      customizationGroups: {
+        include: { options: true },
+      },
     },
   });
+}, {
+  maxWait: 10000, // default is 2000ms: max time transaction waits to be allocated
+  timeout: 10000, // default is 5000ms: max time transaction can run before expiring
+});
 
-  // 2. 🚀 Dispatch notification to users (e.g., all active customers or followers)
+  // Notification logic remains non-blocking...
   try {
-    // Fetch customers to notify (e.g., users with role CUSTOMER)
     const customers = await this.prisma.user.findMany({
       where: { role: 'CUSTOMER' },
       select: { id: true },
-      take: 50, // Limit batch size to optimize performance
+      take: 50,
     });
 
     const merchantName = profile.businessName || profile.name || 'A merchant';
     const title = `🍽️ New Menu Item from ${merchantName}!`;
     const body = `Check out "${dto.name}" now available on Aviorè Go. Tap to order!`;
 
-    // Send push/in-app notification asynchronously to targeted users
     await Promise.all(
       customers.map((customer) =>
         this.notificationService.dispatch({
@@ -189,7 +212,7 @@ async createMenuItem(userId: string, dto: CreateMenuItemDto) {
           title,
           body,
           data: {
-            url: `/merchant/${profile.id}`, // Deep link to merchant store
+            url: `/merchant/${profile.id}`,
             itemId: menuItem.id,
           },
         }).catch((err) => console.error(`Failed to notify user ${customer.id}:`, err))
@@ -197,7 +220,6 @@ async createMenuItem(userId: string, dto: CreateMenuItemDto) {
     );
   } catch (notifErr) {
     console.error('[Menu Notification Error]:', notifErr);
-    // Non-blocking: Do not fail menu creation if notification batch fails
   }
 
   return menuItem;

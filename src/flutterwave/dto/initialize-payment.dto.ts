@@ -46,6 +46,10 @@ export class InitializePaymentDto {
   cartId?: string;
 
   @IsOptional()
+  @IsString()
+  merchantId?: string;
+
+  @IsOptional()
   @IsArray()
   items?: any[]; // <--- Added to prevent validation rejection
 

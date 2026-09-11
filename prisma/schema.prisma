@@ -715,6 +715,35 @@ model MerchantProfile {
   foodOrders   FoodOrder[]
   phone        String?
 
+  // Step 3: Owner / Contact KYC Information
+  ownerFullName       String?
+  ownerPhone          String?
+  ownerEmail          String?
+  dateOfBirth         String?
+  residentialAddress  String?
+  idType              String? // NIN, Driver's License, International Passport, Voter's Card
+  idNumber            String?
+  idDocumentUrl       String?
+
+  // Step 4: Food Business Specifications
+  mainCategories      String[] // Array of categories (Swallow, Rice, Soups, etc.)
+  avgPrepTimeMinutes  Int?
+  acceptsSameDay      Boolean     @default(true)
+  acceptsScheduled    Boolean     @default(false)
+  openingDays         String[]
+  openingTime         String?
+  closingTime         String?
+
+  // Step 6: Verification & Business Documents (CAC)
+  hasCac              Boolean     @default(false)
+  cacNumber           String?
+  cacCertificateUrl   String?
+  supportingDocUrl    String?
+  termsAccepted       Boolean     @default(false)
+  kycStatus           KycStatus   @default(PENDING)
+  rejectionReason     String?
+  isVerified          Boolean     @default(false)
+
   // Location & Landmark relation
 
   landmarkId   String?
@@ -745,6 +774,13 @@ model MerchantProfile {
   updatedAt DateTime @updatedAt
 
   @@map("merchant_profiles")
+}
+
+enum KycStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
 }
 
 model OperatingHours {

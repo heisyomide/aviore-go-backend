@@ -5,75 +5,91 @@ import { PrismaService } from '../providers/database/prisma.service';
 export class StorefrontService {
   constructor(private readonly prisma: PrismaService) {}
 
- async getHomePageData(lat?: number, lng?: number, category?: string) {
-  // Map category slug from frontend to database matching values if needed
-  const categoryFilter = category && category !== 'all' 
-    ? { cuisineType: { contains: category, mode: 'insensitive' as const } } 
-    : {};
+  async getHomePageData(lat?: number, lng?: number, category?: string) {
+    const categoryFilter = category && category !== 'all' 
+      ? { cuisineType: { contains: category, mode: 'insensitive' as const } } 
+      : {};
 
-  const [
-    featuredMerchants,
-    nearbyMerchants,
-    popularDishes,
-    upcomingEvents,
-  ] = await Promise.all([
-    this.prisma.merchantProfile.findMany({
-      where: { isOpen: true, isOnboardingComplete: true, ...categoryFilter },
-      take: 6,
-      select: {
-        id: true,
-        businessName: true,
-        cuisineType: true,
-        logoUrl: true,
-        coverUrl: true,
-        address: true,
-      },
-    }),
-    this.prisma.merchantProfile.findMany({
-      where: { isOpen: true, isOnboardingComplete: true, ...categoryFilter },
-      take: 6,
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        businessName: true,
-        cuisineType: true,
-        logoUrl: true,
-        coverUrl: true,
-        address: true,
-      },
-    }),
-    this.prisma.foodItem.findMany({
-      where: { isAvailable: true },
-      take: 8,
-      include: {
-        merchant: {
-          select: {
-            id: true,
-            businessName: true,
+    const [
+      featuredMerchants,
+      nearbyMerchants,
+      popularDishes,
+      upcomingEvents,
+    ] = await Promise.all([
+      this.prisma.merchantProfile.findMany({
+        where: { isOpen: true, isOnboardingComplete: true, ...categoryFilter },
+        take: 6,
+        select: {
+          id: true,
+          businessName: true,
+          cuisineType: true,
+          logoUrl: true,
+          coverUrl: true,
+          address: true,
+        },
+      }),
+      this.prisma.merchantProfile.findMany({
+        where: { isOpen: true, isOnboardingComplete: true, ...categoryFilter },
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          businessName: true,
+          cuisineType: true,
+          logoUrl: true,
+          coverUrl: true,
+          address: true,
+        },
+      }),
+      this.prisma.foodItem.findMany({
+        where: { isAvailable: true },
+        take: 8,
+        include: {
+          merchant: {
+            select: {
+              id: true,
+              businessName: true,
+            },
           },
         },
-      },
-    }),
-    this.prisma.event.findMany({
-      where: { status: 'PUBLISHED', startDate: { gte: new Date() } },
-      take: 5,
-      orderBy: { startDate: 'asc' },
-    }),
-  ]);
+      }),
+      this.prisma.event.findMany({
+        where: { status: 'PUBLISHED', startDate: { gte: new Date() } },
+        take: 5,
+        orderBy: { startDate: 'asc' },
+      }),
+    ]);
 
-  return {
-    featuredMerchants,
-    nearbyMerchants,
-    popularDishes,
-    upcomingEvents,
-  };
-}
-  async getMerchantById(id: string) {
+    return {
+      featuredMerchants,
+      nearbyMerchants,
+      popularDishes,
+      upcomingEvents,
+    };
+  }
+
+async getMerchantById(id: string) {
     const merchant = await this.prisma.merchantProfile.findUnique({
       where: { id },
       include: {
         menuItems: {
           where: { isAvailable: true },
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            price: true,
+            imageUrl: true,
+            category: true,
+            subCategory: {
+              select: { id: true, name: true },
+            },
+            customizationGroups: {
+              include: {
+                options: true,
+              },
+            },
+          },
         },
       },
     });
@@ -116,26 +132,26 @@ export class StorefrontService {
     return { merchants, foodItems };
   }
 
-async getAllFoodMerchants(search?: string) {
-  return this.prisma.merchantProfile.findMany({
-    where: {
-      isOpen: true, // or remove this if you want to show closed restaurants too
-      ...(search ? {
-        OR: [
-          { businessName: { contains: search, mode: 'insensitive' as const } },
-          { address: { contains: search, mode: 'insensitive' as const } },
-          { cuisineType: { contains: search, mode: 'insensitive' as const } },
-        ]
-      } : {})
-    },
-    include: {
-      _count: {
-        select: { menuItems: true } // Matches your relation name 'menuItems' in MerchantProfile schema
-      }
-    },
-    orderBy: { createdAt: 'desc' },
-  });
-}
+  async getAllFoodMerchants(search?: string) {
+    return this.prisma.merchantProfile.findMany({
+      where: {
+        isOpen: true,
+        ...(search ? {
+          OR: [
+            { businessName: { contains: search, mode: 'insensitive' as const } },
+            { address: { contains: search, mode: 'insensitive' as const } },
+            { cuisineType: { contains: search, mode: 'insensitive' as const } },
+          ]
+        } : {})
+      },
+      include: {
+        _count: {
+          select: { menuItems: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
 
   async getAvailableCategories() {
     const foodItems = await this.prisma.foodItem.findMany({
@@ -159,7 +175,7 @@ async getAllFoodMerchants(search?: string) {
     return Array.from(categorySet);
   }
 
-async getMerchantStorefront(merchantId: string) {
+  async getMerchantStorefront(merchantId: string) {
     try {
       const merchant = await (this.prisma as any).merchantProfile.findUnique({
         where: { id: merchantId },
@@ -192,11 +208,13 @@ async getMerchantStorefront(merchantId: string) {
       },
       include: {
         subCategory: true,
+        customizationGroups: {
+          include: {
+            options: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
   }
-
-  
-
 }

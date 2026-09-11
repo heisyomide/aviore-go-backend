@@ -1,6 +1,7 @@
 import { Controller, Get, Patch, Body, UseGuards, Req } from '@nestjs/common';
 import { MerchantService } from './merchant.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { GetUser } from 'src/auth/decorators/get-user.decorator';
 
 @UseGuards(JwtAuthGuard)
 @Controller('merchant/onboarding')
@@ -22,10 +23,10 @@ export class MerchantController {
     return this.merchantService.updateStep2(req.user.sub || req.user.id, body);
   }
 
-  @Patch('step-3')
-  updateStep3(@Req() req, @Body() body) {
-    return this.merchantService.updateStep3(req.user.sub || req.user.id, body.hours);
-  }
+ @Patch('step-3')
+updateStep3(@Req() req, @Body() body) {
+  return this.merchantService.updateStep3(req.user.sub || req.user.id, body);
+}
 
   @Patch('step-4')
   updateStep4(@Req() req, @Body() body) {
@@ -36,9 +37,10 @@ export class MerchantController {
   updateStep5(@Req() req, @Body() body) {
     return this.merchantService.updateStep5(req.user.sub || req.user.id, body);
   }
-
-  @Patch('step-6')
-  updateStep6(@Req() req, @Body() body) {
-    return this.merchantService.updateStep6(req.user.sub || req.user.id, body.foodItem);
+@Patch('step-6')
+  async updateStep6(@GetUser() user: any, @Body() data: any) {
+    // Extract the string userId safely whether @GetUser returns an object or a string
+    const userId = typeof user === 'string' ? user : user.id || user.userId;
+    return this.merchantService.updateStep6(userId, data);
   }
 }

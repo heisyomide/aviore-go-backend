@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 
 @Injectable()
@@ -8,65 +8,160 @@ export class MerchantService {
   async getProfile(userId: string) {
     const profile = await this.prisma.merchantProfile.findUnique({
       where: { userId },
-      include: { operatingHours: true, bankAccount: true, menuItems: true },
+      include: { operatingHours: true, bankAccount: true, menuItems: true, landmark: true },
     });
     if (!profile) throw new NotFoundException('Merchant profile not found.');
     return profile;
   }
 
-async updateStep1(userId: string, data: { businessName: string; description: string; cuisineType: string; phone: string }) {
+  // Step 1 — Business Information & Branding
+  async updateStep1(
+    userId: string,
+    data: {
+      businessName: string;
+      merchantType?: any;
+      description: string;
+      cuisineType: string;
+      phone: string;
+      logoUrl?: string;
+      coverUrl?: string;
+    }
+  ) {
     return this.prisma.merchantProfile.upsert({
       where: { userId },
       create: {
         userId,
-        ...data,
-        merchantType: 'FOOD',
+        businessName: data.businessName,
+        merchantType: data.merchantType || 'FOOD',
+        description: data.description,
+        cuisineType: data.cuisineType,
+        phone: data.phone,
+        logoUrl: data.logoUrl,
+        coverUrl: data.coverUrl,
         onboardingStep: 2,
         isOnboardingComplete: false,
       },
       update: {
-        ...data,
+        businessName: data.businessName,
+        merchantType: data.merchantType,
+        description: data.description,
+        cuisineType: data.cuisineType,
+        phone: data.phone,
+        logoUrl: data.logoUrl,
+        coverUrl: data.coverUrl,
         onboardingStep: 2,
       },
     });
   }
 
-  async updateStep2(userId: string, data: { address: string; latitude: number; longitude: number }) {
-    return this.prisma.merchantProfile.update({
-      where: { userId },
-      data: { ...data, onboardingStep: 3 },
-    });
-  }
-
-  async updateStep3(userId: string, hours: { dayOfWeek: string; openingTime: string; closingTime: string; isClosed: boolean }[]) {
-    const profile = await this.getProfile(userId);
-    await this.prisma.operatingHours.deleteMany({ where: { merchantId: profile.id } });
-
+  // Step 2 — Business Location & GPS Coords matching your exact schema fields
+  async updateStep2(
+    userId: string,
+    data: {
+      address: string;
+      landmarkId?: string;
+      latitude: number;
+      longitude: number;
+    }
+  ) {
     return this.prisma.merchantProfile.update({
       where: { userId },
       data: {
-        onboardingStep: 4,
-        operatingHours: {
-          create: hours,
-        },
+        address: data.address,
+        latitude: data.latitude,
+        longitude: data.longitude,
+        landmarkId: data.landmarkId,
+        onboardingStep: 3,
       },
-      include: { operatingHours: true },
     });
   }
 
-  async updateStep4(userId: string, data: { logoUrl?: string; coverUrl?: string; photos?: string[] }) {
+  // Step 3 — Owner / Contact KYC Information
+  async updateStep3(
+    userId: string,
+    data: {
+      ownerFullName: string;
+      ownerPhone: string;
+      ownerEmail: string;
+      dateOfBirth?: string;
+      residentialAddress?: string;
+      idType: string;
+      idNumber: string;
+      idDocumentUrl: string;
+    }
+  ) {
     return this.prisma.merchantProfile.update({
       where: { userId },
-      data: { ...data, onboardingStep: 5 },
+      data: {
+        ownerFullName: data.ownerFullName,
+        ownerPhone: data.ownerPhone,
+        ownerEmail: data.ownerEmail,
+        dateOfBirth: data.dateOfBirth,
+        residentialAddress: data.residentialAddress,
+        idType: data.idType,
+        idNumber: data.idNumber,
+        idDocumentUrl: data.idDocumentUrl,
+        onboardingStep: 4,
+      },
     });
   }
 
-  async updateStep5(userId: string, data: { accountNumber: string; accountName: string; bankName: string }) {
+  // Step 4 — Food Business Specifications & Operating Timelines
+  async updateStep4(
+    userId: string,
+    data: {
+      mainCategories: string[];
+      avgPrepTimeMinutes: number;
+      acceptsSameDay: boolean;
+      acceptsScheduled: boolean;
+      openingDays: string[];
+      openingTime: string;
+      closingTime: string;
+      photos?: string[];
+    }
+  ) {
+    return this.prisma.merchantProfile.update({
+      where: { userId },
+      data: {
+        mainCategories: data.mainCategories,
+        avgPrepTimeMinutes: data.avgPrepTimeMinutes,
+        acceptsSameDay: data.acceptsSameDay,
+        acceptsScheduled: data.acceptsScheduled,
+        openingDays: data.openingDays,
+        openingTime: data.openingTime,
+        closingTime: data.closingTime,
+        photos: data.photos,
+        onboardingStep: 5,
+      },
+    });
+  }
+
+  // Step 5 — Payment & Settlement (Bank Account Linking)
+  async updateStep5(
+    userId: string,
+    data: {
+      accountNumber: string;
+      accountName: string;
+      bankName: string;
+    }
+  ) {
     const profile = await this.getProfile(userId);
+
     await this.prisma.bankAccount.upsert({
       where: { merchantId: profile.id },
-      create: { ...data, merchantId: profile.id, isVerified: true },
-      update: data,
+      create: {
+        merchantId: profile.id,
+        accountNumber: data.accountNumber,
+        accountName: data.accountName,
+        bankName: data.bankName,
+        isVerified: true,
+      },
+      update: {
+        accountNumber: data.accountNumber,
+        accountName: data.accountName,
+        bankName: data.bankName,
+        isVerified: true,
+      },
     });
 
     return this.prisma.merchantProfile.update({
@@ -75,18 +170,33 @@ async updateStep1(userId: string, data: { businessName: string; description: str
     });
   }
 
-  async updateStep6(userId: string, data?: { name: string; description?: string; price: number; category: string; imageUrl?: string; prepTimeMinutes?: number }) {
-    const profile = await this.getProfile(userId);
-    
-    if (data) {
-      await this.prisma.foodItem.create({
-        data: { ...data, merchantId: profile.id },
-      });
+  // Step 6 — Verification, Optional CAC & Final Submission
+  async updateStep6(
+    userId: string,
+    data: {
+      hasCac: boolean;
+      cacNumber?: string;
+      cacCertificateUrl?: string;
+      supportingDocUrl?: string;
+      termsAccepted: boolean;
+    }
+  ) {
+    if (!data || !data.termsAccepted) {
+      throw new BadRequestException('You must accept the merchant terms and policies to submit your application.');
     }
 
     return this.prisma.merchantProfile.update({
       where: { userId },
-      data: { isOnboardingComplete: true },
+      data: {
+        hasCac: data.hasCac ?? false,
+        cacNumber: data.cacNumber || null,
+        cacCertificateUrl: data.cacCertificateUrl || null,
+        supportingDocUrl: data.supportingDocUrl || null,
+        termsAccepted: data.termsAccepted,
+        kycStatus: 'PENDING',
+        onboardingStep: 6,
+        isOnboardingComplete: true,
+      },
     });
   }
 }

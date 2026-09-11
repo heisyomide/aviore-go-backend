@@ -102,4 +102,11 @@ export class UploadsController {
     const result = (await this.uploadsService.uploadProfilePhoto(file)) as CloudinaryUploadResponse;
     return { url: result?.secure_url || result?.url };
   }
+
+  @Post('menu-item')
+@UseInterceptors(FileInterceptor('file'))
+async uploadMenuItemImage(@UploadedFile(PHOTO_VALIDATION_PIPE) file: any) {
+  const result = (await this.uploadsService.uploadKycDocument(file)) as CloudinaryUploadResponse; // or your specific menu upload service method
+  return { url: result?.secure_url || result?.url };
+}
 }

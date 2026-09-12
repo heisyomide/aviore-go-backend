@@ -826,25 +826,25 @@ model FoodItem {
   createdAt       DateTime           @default(now())
   foodOrderItems  FoodOrderItem[]
 }
-
 model CustomizationGroup {
-  id           String                 @id @default(uuid())
-  foodItemId   String
-  foodItem     FoodItem               @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
-  name         String                 // e.g., "Choose Soup", "Protein Options"
-  selectionType SelectionType         @default(OPTIONAL) // REQUIRED, OPTIONAL
-  minSelections Int                   @default(0)
-  maxSelections Int                   @default(1)
-  options      CustomizationOption[]
+  id             String               @id @default(uuid())
+  foodItemId     String
+  foodItem       FoodItem             @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+  name           String
+  selectionType  SelectionType        @default(OPTIONAL)
+  minSelections  Int                  @default(0)
+  maxSelections  Int                  @default(1)
+  options        CustomizationOption[]
 }
 
 model CustomizationOption {
-  id          String             @id @default(uuid())
-  groupId     String
-  group       CustomizationGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  name        String             // e.g., "Gbegiri", "Beef"
-  price       Float              @default(0.0) // Additional price modifier
-  isAvailable Boolean            @default(true)
+  id              String               @id @default(uuid())
+  groupId         String
+  group           CustomizationGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name            String
+  price           Float                @default(0.0)
+  isAvailable     Boolean              @default(true)
+  cartItemOptions CartItemOption[]     // Moved here as the opposite relation
 }
 
 enum SelectionType {
@@ -938,8 +938,18 @@ model CartItem {
   foodItemId String
   foodItem   FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
   quantity   Int      @default(1)
+  customizationOptions CartItemOption[]
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+}
+
+model CartItemOption {
+  id                    String              @id @default(uuid())
+  cartItemId            String
+  cartItem              CartItem            @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
+  customizationOptionId String
+  option                CustomizationOption @relation(fields: [customizationOptionId], references: [id], onDelete: Cascade)
+  quantity              Int                 @default(1)
 }
 
 model CallLog {

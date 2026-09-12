@@ -26,16 +26,48 @@ export class CartController {
   @Post('items')
   addItem(
     @Req() req, 
-    @Body() body: { merchantId: string; foodItemId: string; quantity: number },
+    @Body() body: { 
+      merchantId: string; 
+      foodItemId: string; 
+      quantity?: number; 
+      customizations?: Array<{ optionId: string; quantity: number }>;
+      customizationOptionIds?: string[];
+    },
   ) {
     if (!body.merchantId) {
       throw new BadRequestException('merchantId is required in request body');
     }
     const userId = this.resolveUserId(req);
-    return this.cartService.addItemToCart(userId, body.merchantId, body.foodItemId, body.quantity || 1);
+    return this.cartService.addItemToCart(
+      userId, 
+      body.merchantId, 
+      body.foodItemId, 
+      body.quantity || 1, 
+      body.customizations || [],
+      body.customizationOptionIds || []
+    );
   }
 
   @Patch('items/:cartItemId')
+  updateCartItem(
+    @Req() req,
+    @Query('merchantId') merchantId: string,
+    @Param('cartItemId') cartItemId: string,
+    @Body() body: { quantity: number; customizations?: Array<{ optionId: string; quantity: number }> },
+  ) {
+    if (!merchantId) {
+      throw new BadRequestException('merchantId query parameter is required');
+    }
+    const userId = this.resolveUserId(req);
+    
+    // If customizations are provided, use updateCartItem; otherwise fall back to quantity update
+    if (body.customizations) {
+      return this.cartService.updateCartItem(userId, merchantId, cartItemId, body.quantity, body.customizations);
+    }
+    return this.cartService.updateQuantity(userId, merchantId, cartItemId, body.quantity);
+  }
+
+    @Patch('items/:cartItemId')
   updateQuantity(
     @Req() req,
     @Query('merchantId') merchantId: string,

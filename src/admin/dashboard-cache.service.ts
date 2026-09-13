@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { ShipmentStatus } from '@prisma/client';
 
+
+
 export interface DashboardMetrics {
   activeDispatches: number;
   unassignedPipeline: number;
@@ -340,4 +342,12 @@ async getCustomerById(id: string) {
     };
   }
 
+
+
+
+
+
+
 }
+
+

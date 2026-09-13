@@ -88,43 +88,79 @@ private getCurrentDayName(): string {
     });
   }
 async updateOrderStatus(userId: string, orderId: string, status: any) {
-    const profile = await this.prisma.merchantProfile.findUnique({ where: { userId } });
-    if (!profile) throw new NotFoundException('Merchant profile not found');
+  const profile = await this.prisma.merchantProfile.findUnique({ where: { userId } });
+  if (!profile) throw new NotFoundException('Merchant profile not found');
 
-    const foodOrder = await (this.prisma as any).foodOrder.findFirst({
-      where: {
-        OR: [
-          { id: orderId, merchantId: profile.id },
-          { shipmentId: orderId, merchantId: profile.id },
-        ],
+  const foodOrder = await (this.prisma as any).foodOrder.findFirst({
+    where: {
+      OR: [
+        { id: orderId, merchantId: profile.id },
+        { shipmentId: orderId, merchantId: profile.id },
+      ],
+    },
+    include: { merchant: true }, // Ensure merchant is included so we can access merchant.userId
+  });
+
+  if (!foodOrder) throw new NotFoundException('Food order not found');
+
+  const upperStatus = String(status).toUpperCase();
+  let foodOrderStatus = upperStatus;
+
+  if (upperStatus === 'ACCEPTED') {
+    foodOrderStatus = 'ACCEPTED';
+  } else if (upperStatus === 'PREPARING') {
+    foodOrderStatus = 'PREPARING';
+  } else if (upperStatus === 'READY' || upperStatus === 'READY_FOR_PICKUP' || upperStatus === 'ARRIVED_AT_HUB') {
+    foodOrderStatus = 'READY';
+  } else if (upperStatus === 'COMPLETED' || upperStatus === 'DELIVERED') {
+    foodOrderStatus = 'COMPLETED';
+  } else if (upperStatus === 'CANCELLED' || upperStatus === 'REJECTED') {
+    foodOrderStatus = 'CANCELLED';
+  }
+
+  // Use a Prisma transaction to handle order update, wallet funding, and ledger creation atomically
+  return this.prisma.$transaction(async (tx) => {
+    // 1. Update the food order status
+    const updatedOrder = await (tx as any).foodOrder.update({
+      where: { id: foodOrder.id },
+      data: { 
+        status: foodOrderStatus as any,
+        ...(foodOrderStatus === 'COMPLETED' ? { deliveryStatus: 'DELIVERED', deliveredAt: new Date() } : {}),
       },
     });
 
-    if (!foodOrder) throw new NotFoundException('Food order not found');
+    // 2. If the order is marked COMPLETED, fund the merchant's wallet & create a transaction ledger
+    if (foodOrderStatus === 'COMPLETED') {
+      const merchantUserId = foodOrder.merchant?.userId || profile.userId;
 
-    const upperStatus = String(status).toUpperCase();
-    let foodOrderStatus = upperStatus;
-
-    if (upperStatus === 'ACCEPTED') {
-      foodOrderStatus = 'ACCEPTED';
-    } else if (upperStatus === 'PREPARING') {
-      foodOrderStatus = 'PREPARING';
-    } else if (upperStatus === 'READY' || upperStatus === 'READY_FOR_PICKUP' || upperStatus === 'ARRIVED_AT_HUB') {
-      foodOrderStatus = 'READY';
-    } else if (upperStatus === 'CANCELLED' || upperStatus === 'REJECTED') {
-      foodOrderStatus = 'CANCELLED';
-    }
-
-    // Update ONLY the food order. The shipment stays untouched (PENDING) for riders.
-    return this.prisma.$transaction(async (tx) => {
-      const updatedOrder = await (tx as any).foodOrder.update({
-        where: { id: foodOrder.id },
-        data: { status: foodOrderStatus as any },
+      // Find or create the merchant's wallet using the merchant's userId
+      const wallet = await tx.wallet.upsert({
+        where: { userId: merchantUserId },
+        create: {
+          userId: merchantUserId,
+          availableBalance: foodOrder.totalPrice,
+        },
+        update: {
+          availableBalance: { increment: foodOrder.totalPrice },
+        },
       });
 
-      return updatedOrder;
-    });
-  }
+      // Create a transaction ledger record (make sure the referenceCode has a unique constraint fallback)
+      await tx.transaction.create({
+        data: {
+          walletId: wallet.id,
+          amount: foodOrder.totalPrice,
+          type: 'CREDIT',
+          category: 'DELIVERY_PAYMENT',
+          referenceCode: `MERCH-ORD-${foodOrder.orderNumber}-${Date.now()}`,
+          description: `Earnings for completed order ${foodOrder.orderNumber}`,
+        },
+      });
+    }
+
+    return updatedOrder;
+  });
+}
   async getMenu(userId: string) {
     const profile = await this.prisma.merchantProfile.findUnique({
       where: { userId },
@@ -136,6 +172,9 @@ async updateOrderStatus(userId: string, orderId: string, status: any) {
       orderBy: { createdAt: 'desc' },
     });
   }
+
+
+  
 
 async createMenuItem(userId: string, dto: CreateMenuItemDto) {
   const profile = await (this.prisma as any).merchantProfile.findUnique({

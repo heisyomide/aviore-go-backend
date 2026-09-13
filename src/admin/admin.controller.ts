@@ -1,7 +1,7 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, BadRequestException, InternalServerErrorException, NotFoundException, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, BadRequestException, InternalServerErrorException, NotFoundException, UseGuards } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
 import { DashboardCacheService } from './dashboard-cache.service';
-import { RiderApplicationStatus, Prisma, IdentityStatus, ShipmentStatus, User } from '@prisma/client';
+import { RiderApplicationStatus, IdentityStatus, ShipmentStatus, User, KycStatus, UserRole } from '@prisma/client';
 import { AdminOperationsGateway } from './operations.gateway';
 import { TrackingService } from 'src/tracking/tracking.service';
 import { AdminFinanceService } from './finance.service';
@@ -13,10 +13,10 @@ import { AdminBroadcastService } from './admin-broadcast.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { GetUser } from '../auth/decorators/get-user.decorator';
-import { UserRole } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AdminEventsService } from './admin-events.service';
 import { CreateTripDto, UpdateRouteCoordinatesDto } from './dto/create-trip.dto';
+import { AdminMerchantService } from './admin-merchant.service';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -25,17 +25,18 @@ export class AdminController {
   constructor(
     private readonly adminBroadcastService: AdminBroadcastService,
     private readonly operationsGateway: AdminOperationsGateway,
-    private prisma: PrismaService,
-    private cacheService: DashboardCacheService,
+    private readonly prisma: PrismaService,
+    private readonly cacheService: DashboardCacheService,
     private readonly trackingService: TrackingService,
-    private readonly financeService: AdminFinanceService, 
+    private readonly financeService: AdminFinanceService,
     private readonly reportsService: AdminReportsService,
     private readonly notificationService: NotificationService,
     private readonly adminEventsService: AdminEventsService,
+    private readonly adminMerchantService: AdminMerchantService,
   ) {}
 
   /**
-   * 1. DASHBOARD OVERVIEW: Fetches cached operational data metrics
+   * 1. DASHBOARD & ANALYTICS
    */
   @Get('dashboard/overview')
   async getOverviewMetrics() {
@@ -48,14 +49,14 @@ export class AdminController {
   }
 
   /**
-   * 2. SHIPMENTS PIPELINE: Paginated query infrastructure
+   * 2. SHIPMENTS PIPELINE
    */
   @Get('shipments')
   async getShipments(
     @Query('status') status?: ShipmentStatus,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
-    @Query('search') search?: string
+    @Query('search') search?: string,
   ) {
     const skip = (Number(page) - 1) * Number(limit);
     const where: any = {};
@@ -65,7 +66,7 @@ export class AdminController {
       where.OR = [
         { id: search },
         { trackingCode: { contains: search, mode: 'insensitive' } },
-        { recipientPhone: { contains: search } }
+        { recipientPhone: { contains: search } },
       ];
     }
 
@@ -77,17 +78,17 @@ export class AdminController {
         orderBy: { createdAt: 'desc' },
         include: {
           customer: { select: { firstName: true, lastName: true, email: true } },
-          rider: { select: { user: { select: { firstName: true, lastName: true } } } }
-        }
+          rider: { select: { user: { select: { firstName: true, lastName: true } } } },
+        },
       }),
-      this.prisma.shipment.count({ where })
+      this.prisma.shipment.count({ where }),
     ]);
 
     return { records, meta: { total, page: Number(page), limit: Number(limit) } };
   }
 
   /**
-   * 3. RIDER SEPARATED PIPELINE: Segregated onboarding application processing
+   * 3. RIDER ONBOARDING & PIPELINE
    */
   @Get('riders/pending-kyc')
   async getPendingKYCApplications(@Query('page') page = 1, @Query('limit') limit = 20) {
@@ -97,11 +98,11 @@ export class AdminController {
       where: { status: RiderApplicationStatus.SUBMITTED },
       skip,
       take: Number(limit),
-      orderBy: { submittedAt: 'desc' }
+      orderBy: { submittedAt: 'desc' },
     });
   }
 
-@Patch('riders/kyc/:applicationId/evaluate')
+  @Patch('riders/kyc/:applicationId/evaluate')
   async evaluateRiderKYC(
     @Param('applicationId') appId: string,
     @Body('approve') approve: boolean,
@@ -118,7 +119,6 @@ export class AdminController {
         throw new BadRequestException('This application has already been approved.');
       }
 
-      // 1. REJECTION FLOW
       if (!approve) {
         const rejectedApp = await tx.riderApplication.update({
           where: { id: appId },
@@ -147,9 +147,7 @@ export class AdminController {
         return { app: rejectedApp, user: null, approved: false };
       }
 
-      // 2. LOCATE USER
       let targetUser: User | null = null;
-
       if (app.userId) {
         targetUser = await tx.user.findUnique({ where: { id: app.userId } });
       }
@@ -160,7 +158,6 @@ export class AdminController {
         });
       }
 
-      // 3. AUTO-CREATE OR UPDATE USER SAFELY
       if (!targetUser) {
         const userEmail = app.email ? app.email.trim().toLowerCase() : `rider_${app.id}@aviore.com`;
         const userPhone =
@@ -174,7 +171,7 @@ export class AdminController {
               email: userEmail,
               phoneNumber: userPhone,
               passwordHash: 'KYC_APPROVED_EXTERNAL_AUTH',
-              role: 'RIDER' as any,
+              role: UserRole.RIDER,
               status: IdentityStatus.VERIFIED,
             },
           });
@@ -196,7 +193,6 @@ export class AdminController {
         });
       }
 
-      // 4. UPDATE APPLICATION STATUS
       const updatedApp = await tx.riderApplication.update({
         where: { id: appId },
         data: {
@@ -207,7 +203,6 @@ export class AdminController {
         },
       });
 
-      // 5. UPSERT RIDER PROFILE FIRST (Guarantees we have a valid RiderProfile ID)
       const riderProfile = await tx.riderProfile.upsert({
         where: { userId: targetUser.id },
         update: {
@@ -227,14 +222,13 @@ export class AdminController {
         },
       });
 
-      // 6. CREATE OR UPDATE VEHICLE RECORD (USING RIDER PROFILE ID FOR ownerId)
       let activeVehicleId: string | undefined = undefined;
       const vehicleTypeVal = app.vehicleType;
       const plateNumberVal = app.plateNumber || `AVR-${Math.floor(1000 + Math.random() * 9000)}`;
 
       if (vehicleTypeVal) {
         const vehicleData = {
-          ownerId: riderProfile.id, // ✅ Correctly references RiderProfile.id
+          ownerId: riderProfile.id,
           type: vehicleTypeVal,
           make: app.vehicleBrand || 'Unknown',
           model: app.vehicleModel || 'Unknown',
@@ -261,7 +255,6 @@ export class AdminController {
           activeVehicleId = newVehicle.id;
         }
 
-        // Link active vehicle back to the rider profile
         await tx.riderProfile.update({
           where: { id: riderProfile.id },
           data: { activeVehicleId },
@@ -292,13 +285,11 @@ export class AdminController {
   async updateRiderStatus(
     @Param('riderId') riderId: string,
     @Body('action') action: 'SUSPEND' | 'APPROVE' | 'BAN',
-    @Body('reason') reason?: string,
   ) {
-    // Default to VERIFIED
     let targetStatus: IdentityStatus = IdentityStatus.VERIFIED;
 
     if (action === 'SUSPEND' || action === 'BAN') {
-      targetStatus = IdentityStatus.SUSPENDED; // Map BAN to SUSPENDED since BANNED doesn't exist in enum
+      targetStatus = IdentityStatus.SUSPENDED;
     } else if (action === 'APPROVE') {
       targetStatus = IdentityStatus.VERIFIED;
     }
@@ -323,6 +314,21 @@ export class AdminController {
     };
   }
 
+  @Get('riders/tracking')
+  async getLiveTrackingView() {
+    return await this.trackingService.getLiveFleetData();
+  }
+
+  @Get('riders')
+  async getAllFleetRiders() {
+    return await this.cacheService.getAllRiders();
+  }
+
+  @Get('riders/:id')
+  async getSingleFleetRider(@Param('id') id: string) {
+    return await this.cacheService.getRiderById(id);
+  }
+
   /**
    * 4. PRICING ENGINE CONFIG
    */
@@ -332,31 +338,35 @@ export class AdminController {
       this.prisma.globalConfig.upsert({
         where: { key },
         update: { value },
-        create: { key, value }
-      })
+        create: { key, value },
+      }),
     );
 
     await this.prisma.$transaction(mutations);
-    await this.cacheService.forceHydrate(); 
+    await this.cacheService.forceHydrate();
     return { success: true, message: 'Pricing configurations updated successfully.' };
   }
 
   /**
-   * 5. LIVE TRACKING
-   */
-  @Get('riders/tracking')
-  async getLiveTrackingView() {
-    return await this.trackingService.getLiveFleetData();
-  }
-
-  /**
-   * 6. CUSTOMERS MANIFEST
+   * 5. CUSTOMERS MANIFEST
    */
   @Get('customers')
   async getCustomersList() {
     return await this.cacheService.getAllCustomers();
   }
 
+  @Get('customers/:id')
+  async getSingleCustomer(@Param('id') id: string) {
+    const customerProfile = await this.cacheService.getCustomerById(id);
+    if (!customerProfile) {
+      throw new NotFoundException(`Customer record reference profile matching key "${id}" not found.`);
+    }
+    return customerProfile;
+  }
+
+  /**
+   * 6. FINANCE & LEDGER
+   */
   @Get('finances/overview')
   async getFinanceMetrics() {
     return await this.financeService.getFinanceOverview();
@@ -382,37 +392,16 @@ export class AdminController {
     return await this.financeService.rejectWithdrawal(id, 'SYSTEM_ADMIN_UI');
   }
 
-  @Get('customers/:id')
-  async getSingleCustomer(@Param('id') id: string) {
-    const customerProfile = await this.cacheService.getCustomerById(id);
-    
-    if (!customerProfile) {
-      throw new NotFoundException(`Customer record reference profile matching key "${id}" not found.`);
-    }
-    
-    return customerProfile;
-  }
-
-  @Get('riders')
-  async getAllFleetRiders() {
-    return await this.cacheService.getAllRiders();
-  }
-
-  @Get('riders/:id')
-  async getSingleFleetRider(@Param('id') id: string) {
-    return await this.cacheService.getRiderById(id);
-  }
-
+  /**
+   * 7. BROADCASTS
+   */
   @Post('broadcast')
-  async sendBroadcast(
-    @GetUser() adminUser: any,
-    @Body() dto: AdminBroadcastDto,
-  ) {
+  async sendBroadcast(@GetUser() adminUser: any, @Body() dto: AdminBroadcastDto) {
     return this.adminBroadcastService.sendBroadcast(dto, adminUser.id);
   }
 
   /**
-   * 7. EVENTS & TRANSIT OPERATIONS
+   * 8. EVENTS & TRANSIT OPERATIONS
    */
   @Get('events')
   async getAllAdminEvents() {
@@ -424,7 +413,7 @@ export class AdminController {
     return this.adminEventsService.getPendingEvents();
   }
 
-  @Patch(':id/accept')
+  @Patch('events/:id/accept')
   async acceptEvent(@Param('id') id: string) {
     return this.adminEventsService.acceptEvent(id);
   }
@@ -443,20 +432,46 @@ export class AdminController {
   async publishTripLive(@Param('id') id: string) {
     return this.adminEventsService.publishTripLive(id);
   }
-  
-  
+
+  @Patch('events/routes/:id/coordinates')
+  async updateRouteCoordinates(
+    @Param('id') routeId: string,
+    @Body() dto: UpdateRouteCoordinatesDto,
+  ) {
+    return this.adminEventsService.updateRouteCoordinates(routeId, dto);
+  }
+
   /**
-   * 8. WILDCARD CATCH-ALLS (MUST REMAIN AT THE BOTTOM OF THE FILE)
+   * 9. MERCHANT MANAGEMENT (DEDICATED PREFIX TO PREVENT COLLISION WITH WILDCARDS)
+   */
+  @Get('merchants')
+  async getAllMerchants() {
+    return this.adminMerchantService.getAllMerchants();
+  }
+
+  @Get('merchants/:id')
+  async getMerchantById(@Param('id') id: string) {
+    return this.adminMerchantService.getMerchantById(id);
+  }
+
+  @Patch('merchants/:id/status')
+  async updateMerchantStatus(
+    @Param('id') id: string,
+    @Body('kycStatus') kycStatus: KycStatus,
+  ) {
+    return this.adminMerchantService.updateMerchantStatus(id, kycStatus);
+  }
+
+  /**
+   * 10. WILDCARD CATCH-ALLS (MUST REMAIN AT THE VERY BOTTOM OF THE FILE)
    */
   @Get(':id')
   async getShipmentDetails(@Param('id') id: string) {
     try {
       const shipment = await this.cacheService.findDetailsById(id);
-      
       if (!shipment) {
         throw new NotFoundException(`Shipment matrix with target key matching "${id}" not found.`);
       }
-      
       return shipment;
     } catch (error) {
       if (error instanceof NotFoundException) {
@@ -465,12 +480,4 @@ export class AdminController {
       throw new InternalServerErrorException('Fatal failure during backend manifest ingestion workflow.');
     }
   }
-
-  @Patch(':id/coordinates')
-async updateRouteCoordinates(
-  @Param('id') routeId: string,
-  @Body() dto: UpdateRouteCoordinatesDto,
-) {
-  return this.adminEventsService.updateRouteCoordinates(routeId, dto);
-}
 }

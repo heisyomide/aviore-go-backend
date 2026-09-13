@@ -3,11 +3,18 @@ import { PrismaService } from '../providers/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { AdminBroadcastDto } from './dto/broadcast.dto';
 import { BroadcastChannel } from '../notification/dto/admin-broadcast.dto';
-import { ChannelType, IdentityStatus } from '@prisma/client';
+import { ChannelType, IdentityStatus, Prisma } from '@prisma/client';
 
 @Injectable()
 export class AdminBroadcastService {
   private readonly logger = new Logger(AdminBroadcastService.name);
+
+  private static readonly ROLE_MAP: Record<string, string> = {
+    CUSTOMERS: 'CUSTOMER',
+    RIDERS: 'RIDER',
+    ORGANIZERS: 'ORGANIZER',
+    MERCHANTS: 'MERCHANT',
+  };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -20,18 +27,17 @@ export class AdminBroadcastService {
   async sendBroadcast(dto: AdminBroadcastDto, adminUserId: string) {
     const { title, body, targetAudience, channels } = dto;
 
-    // 1. Build database filter targeting active accounts
-    const whereClause: any = {
+    const roleFilter = targetAudience
+      ? AdminBroadcastService.ROLE_MAP[targetAudience] ?? targetAudience
+      : undefined;
+
+    const whereClause: Prisma.UserWhereInput = {
       status: {
-        in: [IdentityStatus.VERIFIED, IdentityStatus.PENDING_VERIFICATION, 'PENDING_VERIFICATION' as any],
+        in: [IdentityStatus.VERIFIED, IdentityStatus.PENDING_VERIFICATION],
       },
+      ...(roleFilter ? { role: roleFilter as any } : {}),
     };
 
-    if (targetAudience) {
-      whereClause.role = targetAudience; // e.g., UserRole.ORGANIZER
-    }
-
-    // 2. Query target recipients
     const recipients = await this.prisma.user.findMany({
       where: whereClause,
       select: {
@@ -79,34 +85,18 @@ export class AdminBroadcastService {
       });
     }
 
-    // 5. IN-APP / SYSTEM: Create in-app notification rows so they appear on the user's /notifications page
-    // (Uncomment if your schema has an in-app notification model like prisma.notification)
-    /*
-    await this.prisma.notification.createMany({
-      data: recipientUserIds.map((userId) => ({
-        userId,
-        title,
-        message: body,
-        type: 'ADMIN',
-        isRead: false,
-      })),
-    });
-    */
-
-    // 6. Record Audit Log entries in BroadcastLog
-    await this.prisma.$transaction(
-      channels.map((channel) =>
-        this.prisma.broadcastLog.create({
-          data: {
-            title,
-            body,
-            targetAudience: targetAudience || null,
-            channel,
-            sentById: adminUserId,
-          },
-        }),
-      ),
-    );
+    // 5. Record Audit Log entries in BroadcastLog using createMany (fixes P2028 transaction timeout)
+    if (channels.length > 0) {
+      await this.prisma.broadcastLog.createMany({
+        data: channels.map((channel) => ({
+          title,
+          body,
+          targetAudience: targetAudience || null,
+          channel,
+          sentById: adminUserId,
+        })),
+      });
+    }
 
     return dispatchResults;
   }

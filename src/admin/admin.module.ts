@@ -11,6 +11,7 @@ import { AdminEventsService } from './admin-events.service'; // <-- 1. Import it
 import { TrackingModule } from 'src/tracking/tracking.module';
 import { NotificationModule } from 'src/notification/notification.module';
 import { FlutterwaveModule } from 'src/flutterwave/flutterwave.module';
+import { AdminMerchantService } from './admin-merchant.service';
 
 @Module({
   imports: [
@@ -27,7 +28,8 @@ import { FlutterwaveModule } from 'src/flutterwave/flutterwave.module';
     AdminReportsService,
     AdminOperationsGateway,
     AdminBroadcastService,
-    AdminEventsService, // <-- 2. Register it as a provider
+    AdminEventsService, 
+    AdminMerchantService,// <-- 2. Register it as a provider
   ],
   exports: [
     AdminConfigService,
@@ -36,7 +38,8 @@ import { FlutterwaveModule } from 'src/flutterwave/flutterwave.module';
     AdminReportsService,
     AdminOperationsGateway,
     AdminBroadcastService,
-    AdminEventsService, // <-- 3. Export it (optional, but good practice)
+    AdminEventsService,
+    AdminMerchantService, // <-- 3. Export it (optional, but good practice)
   ],
 })
 export class AdminModule {}

@@ -12,7 +12,7 @@ export class BrevoService {
     });
   }
 
- async sendBroadcastEmail(
+  async sendBroadcastEmail(
     to: string[],
     subject: string,
     htmlContent: string,
@@ -21,7 +21,11 @@ export class BrevoService {
       const fromEmail =
         this.config.get<string>('BREVO_FROM_EMAIL') ||
         'support@aviorego.com.ng';
+      const replyToEmail =
+        this.config.get<string>('BREVO_REPLY_TO') || fromEmail;
 
+      // Map each recipient cleanly into individual 'to' entries for proper envelope headers,
+      // or batch if volume is high. Brevo accepts an array of destination objects in 'to'.
       return await this.brevoClient.transactionalEmails.sendTransacEmail({
         subject,
         htmlContent,
@@ -29,10 +33,11 @@ export class BrevoService {
           name: 'Aviorè Go',
           email: fromEmail,
         },
-        // Use bcc instead of to so users don't see each other's emails
-        bcc: to.map((email) => ({ email })),
-        // Provide a generic fallback or your own email in 'to' to satisfy API requirements if needed
-        to: [{ email: fromEmail, name: 'Aviorè Go Recipient' }],
+        replyTo: {
+          email: replyToEmail,
+          name: 'Aviorè Go Support',
+        },
+        to: to.map((email) => ({ email })),
       });
     } catch (error: any) {
       throw new InternalServerErrorException(

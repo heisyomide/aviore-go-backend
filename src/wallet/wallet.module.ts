@@ -11,6 +11,8 @@ import { HttpModule } from '@nestjs/axios';
 import { NotificationModule } from 'src/notification/notification.module';
 import { DispatchModule } from 'src/dispatch/dispatch.module';
 import { PricingModule } from 'src/pricing/pricing.module';
+import { MerchantWalletService } from './merchant-wallet.service';
+import { MerchantWalletController } from './merchant-wallet.controller';
 
 @Module({
   imports: [
@@ -21,14 +23,15 @@ import { PricingModule } from 'src/pricing/pricing.module';
     PricingModule,
   ],
 
-  controllers: [WalletController],
+  controllers: [WalletController, MerchantWalletController],
 
   providers: [
     WalletService,
+    MerchantWalletService,
     FlutterwaveService,
     PrismaService,
   ],
 
-  exports: [WalletService],
+  exports: [WalletService, MerchantWalletService,],
 })
 export class WalletModule {}

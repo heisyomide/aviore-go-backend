@@ -168,6 +168,7 @@ const {
     let description = '';
     let metaPayload: Record<string, any> = {};
     let pricingDetails: any = null;
+    let merchant: any = null; // Track merchant scope across branches for subaccount lookup
 
     if (shipmentId) {
       const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
@@ -233,7 +234,12 @@ const {
         },
         include: { 
           items: { 
-            include: { foodItem: true } 
+            include: { 
+              foodItem: true,
+              customizationOptions: {
+                include: { option: true }
+              }
+            } 
           } 
         },
       });
@@ -244,7 +250,7 @@ const {
 
       const resolvedMerchantId = dbCart.merchantId;
 
-      const merchant = await this.prisma.merchantProfile.findUnique({
+      merchant = await this.prisma.merchantProfile.findUnique({
         where: { id: resolvedMerchantId },
       });
 
@@ -262,10 +268,14 @@ const {
         throw new BadRequestException('DEFAULT_ADDRESS_WITH_COORDINATES_REQUIRED');
       }
 
-      const foodSubtotal = dbCart.items.reduce(
-        (sum, item) => sum + Number(item.foodItem.price) * item.quantity,
-        0,
-      );
+      // FIX: Calculate accurate food subtotal including item base price AND custom options/add-ons
+      const foodSubtotal = dbCart.items.reduce((sum, item) => {
+        const itemBase = Number(item.foodItem.price) * item.quantity;
+        const customizationSum = (item.customizationOptions || []).reduce((optAcc: number, customOpt: any) => {
+          return optAcc + (Number(customOpt.option?.price || 0) * Number(customOpt.quantity || 1));
+        }, 0);
+        return sum + itemBase + customizationSum;
+      }, 0);
 
       pricingDetails = await this.foodPricingService.calculateFoodOrderPricing({
         pickupLat: Number(merchant.latitude),
@@ -301,6 +311,15 @@ const {
     const frontendUrl = this.config.get<string>('FRONTEND_URL') || process.env.FRONTEND_URL || 'http://localhost:3000';
     const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
 
+    let subaccountsPayload: any = undefined;
+    if (metaPayload.type === 'FOOD_CART_CHECKOUT' && merchant && (merchant as any).flutterwaveSubaccountId) {
+      subaccountsPayload = [
+        {
+          id: (merchant as any).flutterwaveSubaccountId,
+        }
+      ];
+    }
+
     const payload = {
       tx_ref: txRef,
       amount: rawTotal,
@@ -315,6 +334,7 @@ const {
         description,
       },
       meta: metaPayload,
+      ...(subaccountsPayload ? { subaccounts: subaccountsPayload } : {}),
     };
 
     try {
@@ -330,7 +350,7 @@ const {
     }
   }
 
-  public async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
+public async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
     const customerId = meta.customerId;
     const cartId = meta.cartId;
     const merchantId = meta.merchantId;
@@ -349,7 +369,14 @@ const {
 
     const cart = await this.prisma.cart.findUnique({
       where: { id: cartId },
-      include: { items: { include: { foodItem: true } } },
+      include: { 
+        items: { 
+          include: { 
+            foodItem: true,
+            customizationOptions: { include: { option: true } }
+          } 
+        } 
+      },
     });
 
     if (!cart || cart.items.length === 0) {
@@ -363,18 +390,40 @@ const {
       this.prisma.savedAddress.findFirst({ where: { userId: customerId, isDefault: true } }),
     ]);
 
-    const subTotal = Number(meta.subtotal);
-    const deliveryFee = Number(meta.deliveryFee);
-    const serviceFee = Number(meta.serviceFee || 0);
-    const distanceKm = Number(meta.distanceKm || 0);
-    
+    if (!merchant || merchant.latitude == null || merchant.longitude == null) {
+      this.logger.error(`[CART_CHECKOUT] Merchant or coordinates missing for merchantId ${merchantId}`);
+      return;
+    }
+
+    if (!defaultAddress || defaultAddress.latitude == null || defaultAddress.longitude == null) {
+      this.logger.error(`[CART_CHECKOUT] Default delivery address or coordinates missing for customer ${customerId}`);
+      return;
+    }
+
+    // Recalculate accurate pricing and splits via FoodPricingService
+    const foodSubtotal = cart.items.reduce((sum, item) => {
+      const itemBase = Number(item.foodItem.price) * item.quantity;
+      const customizationSum = (item.customizationOptions || []).reduce((optAcc: number, customOpt: any) => {
+        return optAcc + (Number(customOpt.option?.price || 0) * Number(customOpt.quantity || 1));
+      }, 0);
+      return sum + itemBase + customizationSum;
+    }, 0);
+
+    const pricingResult = this.foodPricingService.calculateFoodOrderPricing({
+      pickupLat: Number(merchant.latitude),
+      pickupLng: Number(merchant.longitude),
+      destinationLat: Number(defaultAddress.latitude),
+      destinationLng: Number(defaultAddress.longitude),
+      foodSubtotal,
+    });
+
     const orderNumber = `AVR-FOOD-${randomUUID().substring(0, 8).toUpperCase()}`;
     const trackingCode = `TRK-${randomUUID().substring(0, 8).toUpperCase()}`;
 
     const deliveryAddress = defaultAddress 
       ? `${defaultAddress.street}, ${defaultAddress.city}, ${defaultAddress.state}` 
       : customer?.streetAddress || 'Default Customer Address';
-    const pickupAddress = merchant?.address || 'Merchant Location';
+    const pickupAddress = merchant.address || 'Merchant Location';
     const recipientName = `${customer?.firstName || 'Customer'} ${customer?.lastName || ''}`.trim();
     const recipientPhone = customer?.phoneNumber || '0000000000';
 
@@ -391,23 +440,23 @@ const {
           weightRange: WeightRange.UNDER_1KG,
           regionType: RegionType.INTRA_CITY,
           pickupAddress,
-          pickupLat: merchant?.latitude || 0.0,
-          pickupLng: merchant?.longitude || 0.0,
+          pickupLat: Number(merchant.latitude),
+          pickupLng: Number(merchant.longitude),
           destinationAddress: deliveryAddress,
-          destinationLat: Number(defaultAddress?.latitude || 0.0),
-          destinationLng: Number(defaultAddress?.longitude || 0.0),
+          destinationLat: Number(defaultAddress.latitude),
+          destinationLng: Number(defaultAddress.longitude),
           recipient: recipientName,
           recipientPhone,
           verificationPin: Math.floor(1000 + Math.random() * 9000).toString(),
-          baseFee: subTotal,
+          baseFee: pricingResult.breakdown.baseFee,
           pickupDistFee: 0,
-          deliveryDistFee: deliveryFee,
-          extraCharges: serviceFee,
+          deliveryDistFee: pricingResult.breakdown.deliveryDistanceFee,
+          extraCharges: pricingResult.splits.foodPlatformShare,
           totalPrice: totalPaid,
-          riderShare: 0,
-          platformShare: serviceFee,
-          distanceKm,
-          estimatedMinutes: Math.round(distanceKm * 3) + 15,
+          riderShare: pricingResult.splits.riderShare,
+          platformShare: pricingResult.splits.totalPlatformRevenue,
+          distanceKm: pricingResult.distanceKm,
+          estimatedMinutes: pricingResult.estimatedMinutes,
         },
       });
 
@@ -419,13 +468,13 @@ const {
           shipmentId: shipment.id,
           status: FoodOrderStatus.PENDING,
           deliveryStatus: FoodDeliveryStatus.NOT_ASSIGNED,
-          subTotal,
-          deliveryFee,
-          serviceFee,
+          subTotal: pricingResult.subtotal,
+          deliveryFee: pricingResult.deliveryFee,
+          serviceFee: pricingResult.splits.foodPlatformShare,
           totalPrice: totalPaid,
           deliveryAddress,
-          deliveryLat: Number(defaultAddress?.latitude || 0.0),
-          deliveryLng: Number(defaultAddress?.longitude || 0.0),
+          deliveryLat: Number(defaultAddress.latitude),
+          deliveryLng: Number(defaultAddress.longitude),
           items: {
             create: cart.items.map((item: any) => ({
               foodItemId: item.foodItemId,
@@ -443,7 +492,6 @@ const {
 
     this.logger.log(`[FOOD_ORDER_CREATED] Structured Food Order ${orderNumber} successfully placed for customer ${customerId}`);
   }
-
   
  async verifyPayment(transactionId: string) {
     try {

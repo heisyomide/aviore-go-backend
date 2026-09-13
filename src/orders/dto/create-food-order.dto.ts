@@ -1,16 +1,41 @@
-import { IsString, IsNumber, IsArray, ValidateNested, IsOptional, IsNotEmpty } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsArray, ValidateNested, IsNotEmpty, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
-class FoodOrderItemDto {
+export class OrderCustomizationSelectionDto {
   @IsString()
   @IsNotEmpty()
-  menuItemId!: string;
+  optionId!: string;
 
   @IsNumber()
+  @Min(1)
+  quantity!: number;
+}
+
+export class FoodOrderItemDto {
+  @IsString()
+  @IsOptional()
+  foodItemId?: string;
+
+  @IsString()
+  @IsOptional()
+  menuItemId?: string;
+
+  @IsNumber()
+  @Min(1)
   quantity!: number;
 
   @IsNumber()
-  price!: number;
+  @IsOptional()
+  price?: number;
+
+  @IsArray()
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => OrderCustomizationSelectionDto)
+  customizationOptions?: OrderCustomizationSelectionDto[];
+
+  @IsOptional()
+  selectedAddOns?: any;
 }
 
 export class CreateFoodOrderDto {
@@ -23,7 +48,6 @@ export class CreateFoodOrderDto {
   @Type(() => FoodOrderItemDto)
   items!: FoodOrderItemDto[];
 
-  // Delivery & Location data required for the downstream shipment calculation
   @IsString()
   @IsNotEmpty()
   deliveryAddress!: string;

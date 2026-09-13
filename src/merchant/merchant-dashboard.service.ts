@@ -87,8 +87,7 @@ private getCurrentDayName(): string {
       data: { isOpen },
     });
   }
-
- async updateOrderStatus(userId: string, orderId: string, status: any) {
+async updateOrderStatus(userId: string, orderId: string, status: any) {
     const profile = await this.prisma.merchantProfile.findUnique({ where: { userId } });
     if (!profile) throw new NotFoundException('Merchant profile not found');
 
@@ -103,27 +102,25 @@ private getCurrentDayName(): string {
 
     if (!foodOrder) throw new NotFoundException('Food order not found');
 
-    let shipmentStatus: string | undefined = undefined;
-    if (status === 'ACCEPTED' || status === 'PREPARING') {
-      shipmentStatus = 'ACCEPTED';
-    } else if (status === 'READY_FOR_PICKUP') {
-      shipmentStatus = 'ARRIVED_AT_HUB';
-    } else if (status === 'CANCELLED') {
-      shipmentStatus = 'CANCELLED';
+    const upperStatus = String(status).toUpperCase();
+    let foodOrderStatus = upperStatus;
+
+    if (upperStatus === 'ACCEPTED') {
+      foodOrderStatus = 'ACCEPTED';
+    } else if (upperStatus === 'PREPARING') {
+      foodOrderStatus = 'PREPARING';
+    } else if (upperStatus === 'READY' || upperStatus === 'READY_FOR_PICKUP' || upperStatus === 'ARRIVED_AT_HUB') {
+      foodOrderStatus = 'READY';
+    } else if (upperStatus === 'CANCELLED' || upperStatus === 'REJECTED') {
+      foodOrderStatus = 'CANCELLED';
     }
 
+    // Update ONLY the food order. The shipment stays untouched (PENDING) for riders.
     return this.prisma.$transaction(async (tx) => {
       const updatedOrder = await (tx as any).foodOrder.update({
         where: { id: foodOrder.id },
-        data: { status },
+        data: { status: foodOrderStatus as any },
       });
-
-      if (foodOrder.shipmentId) {
-        await tx.shipment.update({
-          where: { id: foodOrder.shipmentId },
-          data: { ...(shipmentStatus ? { status: shipmentStatus as any } : {}) },
-        });
-      }
 
       return updatedOrder;
     });

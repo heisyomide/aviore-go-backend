@@ -37,15 +37,9 @@ export class FoodOrdersService {
     }
 
     let subTotal = 0;
-    const orderItemsData: {
-      foodItemId: string;
-      name: string;
-      price: number;
-      quantity: number;
-    }[] = [];
+    const orderItemsData: any[] = [];
 
     for (const itemDto of dto.items) {
-      // Accommodate either menu/food item ID from DTO variation
       const itemId = (itemDto as any).foodItemId || (itemDto as any).menuItemId;
 
       const foodItem = await this.prisma.foodItem.findUnique({
@@ -56,14 +50,43 @@ export class FoodOrdersService {
         throw new BadRequestException(`Food item with ID ${itemId} is not available.`);
       }
 
-      const itemTotal = Number(foodItem.price) * itemDto.quantity;
+      let itemBasePrice = Number(foodItem.price);
+      let itemCustomizationSum = 0;
+      const processedCustomizationOptions: any[] = [];
+
+      if (itemDto.customizationOptions && Array.isArray(itemDto.customizationOptions)) {
+        for (const customOptionDto of itemDto.customizationOptions) {
+          const optionRecord = await (this.prisma as any).foodItemOption.findUnique({
+            where: { id: customOptionDto.optionId },
+          });
+
+          if (!optionRecord) {
+            throw new BadRequestException(`Customization option with ID ${customOptionDto.optionId} not found.`);
+          }
+
+          const optPrice = Number(optionRecord.price || 0);
+          const optQty = Number(customOptionDto.quantity || 1);
+          itemCustomizationSum += optPrice * optQty;
+
+          processedCustomizationOptions.push({
+            optionId: optionRecord.id,
+            quantity: optQty,
+          });
+        }
+      }
+
+      const itemTotal = (itemBasePrice + itemCustomizationSum) * itemDto.quantity;
       subTotal += itemTotal;
 
       orderItemsData.push({
         foodItemId: foodItem.id,
         name: foodItem.name,
-        price: Number(foodItem.price),
+        price: itemBasePrice,
         quantity: itemDto.quantity,
+        selectedAddOns: itemDto.selectedAddOns ?? undefined,
+        customizationOptions: processedCustomizationOptions.length > 0 ? {
+          create: processedCustomizationOptions
+        } : undefined,
       });
     }
 
@@ -77,7 +100,7 @@ export class FoodOrdersService {
 
     const orderNumber = await this.generateOrderTrackingCode();
 
-    const foodOrder = await this.prisma.foodOrder.create({
+    const foodOrder = await (this.prisma as any).foodOrder.create({
       data: {
         orderNumber,
         customerId,
@@ -92,11 +115,25 @@ export class FoodOrdersService {
         deliveryLat: dto.destinationLat,
         deliveryLng: dto.destinationLng,
         items: {
-          create: orderItemsData,
+          create: orderItemsData.map((item) => ({
+            foodItemId: item.foodItemId,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            selectedAddOns: item.selectedAddOns,
+            customizationOptions: item.customizationOptions,
+          })),
         },
       },
       include: {
-        items: { include: { foodItem: true } },
+        items: { 
+          include: { 
+            foodItem: true,
+            customizationOptions: {
+              include: { option: true }
+            }
+          } 
+        },
         merchant: true,
       },
     });
@@ -112,7 +149,7 @@ export class FoodOrdersService {
    * Triggered upon successful payment confirmation to create the logistics shipment
    */
   async handleSuccessfulPayment(orderId: string, transactionReference: string) {
-    const order = await this.prisma.foodOrder.findUnique({
+    const order = await (this.prisma as any).foodOrder.findUnique({
       where: { id: orderId },
       include: { merchant: true, customer: true },
     });
@@ -121,7 +158,7 @@ export class FoodOrdersService {
       throw new NotFoundException('Food order not found.');
     }
 
-    const updatedOrder = await this.prisma.foodOrder.update({
+    const updatedOrder = await (this.prisma as any).foodOrder.update({
       where: { id: orderId },
       data: {
         status: FoodOrderStatus.ACCEPTED,
@@ -178,7 +215,7 @@ export class FoodOrdersService {
       },
     });
 
-    await this.prisma.foodOrder.update({
+    await (this.prisma as any).foodOrder.update({
       where: { id: orderId },
       data: { shipmentId: shipment.id },
     });
@@ -189,8 +226,8 @@ export class FoodOrdersService {
   /**
    * Get all food orders for a customer
    */
-  async getCustomerOrders(userId: string) {
-    const orders = await this.prisma.foodOrder.findMany({
+async getCustomerOrders(userId: string) {
+    const orders = await (this.prisma as any).foodOrder.findMany({
       where: { customerId: userId },
       include: {
         merchant: {
@@ -199,6 +236,7 @@ export class FoodOrdersService {
             businessName: true,
             logoUrl: true,
             address: true,
+            phone: true, // Added merchant phone for frontend usage
           },
         },
         shipment: {
@@ -206,6 +244,7 @@ export class FoodOrdersService {
             id: true,
             trackingCode: true,
             status: true,
+            verificationPin: true, // Include PIN for customer view matching frontend
             rider: {
               select: {
                 id: true,
@@ -238,29 +277,81 @@ export class FoodOrdersService {
     return {
       success: true,
       count: orders.length,
-      orders: orders.map((order) => ({
-        ...order,
-        restaurant: order.merchant,
-        totalAmount: Number(order.totalPrice ?? 0),
-        shipment: order.shipment ? {
-          ...order.shipment,
-          rider: order.shipment.rider ? {
-            ...order.shipment.rider,
-            user: {
-              ...order.shipment.rider.user,
-              fullName: `${order.shipment.rider.user.firstName ?? ''} ${order.shipment.rider.user.lastName ?? ''}`.trim(),
-            },
+      orders: (orders as any[]).map((order) => {
+    const hasRider = Boolean(order.shipment?.rider);
+    const foodStatus = order.status;
+    const deliveryStatus = order.deliveryStatus;
+    const shipmentStatus = order.shipment?.status;
+    let statusMessage = 'Processing your order...';
+
+    if (foodStatus === 'CANCELLED') {
+      statusMessage = 'This order has been cancelled.';
+    } else if (foodStatus === 'DELIVERED' || deliveryStatus === 'DELIVERED') {
+      statusMessage = 'Your order has been delivered successfully.';
+    } else if (shipmentStatus === 'OUT_FOR_DELIVERY') {
+      statusMessage = 'Your rider has arrived at your destination! Please prepare your PIN.';
+    } else if (deliveryStatus === 'ARRIVED_AT_PICKUP' || deliveryStatus === 'ARRIVED') {
+      statusMessage = 'Your rider has arrived at the restaurant pickup location.';
+    } else if (deliveryStatus === 'PICKED_UP' || deliveryStatus === 'IN_TRANSIT' || shipmentStatus === 'IN_TRANSIT') {
+      statusMessage = 'Your order has been picked up and is on the way to you.';
+    } else if (foodStatus === 'READY') {
+      statusMessage = hasRider 
+        ? 'Your food is ready and your rider is heading to pickup.' 
+        : 'Your food is ready! We are currently matching you with a nearby rider.';
+    } else if (foodStatus === 'PREPARING') {
+      statusMessage = 'The restaurant is currently preparing your meal.';
+    } else if (foodStatus === 'ACCEPTED') {
+      statusMessage = 'Your order has been accepted by the restaurant.';
+    }
+
+
+        return {
+          ...order,
+          statusMessage,
+          restaurant: {
+            ...order.merchant,
+            name: order.merchant?.businessName, // Map businessName to name for frontend component
+          },
+          totalAmount: Number(order.totalPrice ?? 0),
+          subtotal: Number(order.subtotal ?? 0),
+          deliveryFee: Number(order.deliveryFee ?? 0),
+          serviceFee: Number(order.serviceFee ?? 0),
+          items: (order.items ?? []).map((item: any) => ({
+            ...item,
+            price: Number(item.price),
+            customizationOptions: Array.isArray(item.customizationOptions)
+              ? item.customizationOptions.map((opt: any) => ({
+                  ...opt,
+                  option: {
+                    ...opt.option,
+                    price: Number(opt.option?.price || 0),
+                  },
+                }))
+              : [],
+          })),
+          shipment: order.shipment ? {
+            ...order.shipment,
+            rider: order.shipment.rider ? {
+              ...order.shipment.rider,
+              phone: order.shipment.rider.user?.phoneNumber, // Map phone field directly for frontend
+              avatarUrl: null, // Add if available in profile
+              vehicle: order.shipment.rider.activeVehicle, // Map activeVehicle to vehicle expected by frontend
+              user: {
+                ...order.shipment.rider.user,
+                name: `${order.shipment.rider.user.firstName ?? ''} ${order.shipment.rider.user.lastName ?? ''}`.trim(),
+              },
+            } : null,
           } : null,
-        } : null,
-      })),
+        };
+      }),
     };
   }
 
   /**
-   * Get specific food order tracking details for a customer
+   * Get specific food order tracking details for a customer with dynamic status messaging
    */
-  async getCustomerOrderById(orderId: string, userId: string) {
-    const order = await this.prisma.foodOrder.findUnique({
+async getCustomerOrderById(orderId: string, userId: string) {
+    const order = await (this.prisma as any).foodOrder.findUnique({
       where: { id: orderId },
       include: {
         merchant: {
@@ -316,6 +407,32 @@ export class FoodOrdersService {
       throw new ForbiddenException('You do not have access to view this order.');
     }
 
+    const hasRider = Boolean(order.shipment?.rider);
+    const foodStatus = order.status;
+    const deliveryStatus = order.deliveryStatus;
+    const shipmentStatus = order.shipment?.status;
+    let statusMessage = 'Processing your order...';
+
+    if (foodStatus === 'CANCELLED') {
+      statusMessage = 'This order has been cancelled.';
+    } else if (foodStatus === 'DELIVERED' || deliveryStatus === 'DELIVERED') {
+      statusMessage = 'Your order has been delivered successfully.';
+    } else if (shipmentStatus === 'OUT_FOR_DELIVERY') {
+      statusMessage = 'Your rider has arrived at your destination! Please prepare your PIN.';
+    } else if (deliveryStatus === 'ARRIVED_AT_PICKUP' || deliveryStatus === 'ARRIVED') {
+      statusMessage = 'Your rider has arrived at the restaurant pickup location.';
+    } else if (deliveryStatus === 'PICKED_UP' || deliveryStatus === 'IN_TRANSIT' || shipmentStatus === 'IN_TRANSIT') {
+      statusMessage = 'Your order has been picked up and is on the way to you.';
+    } else if (foodStatus === 'READY') {
+      statusMessage = hasRider 
+        ? 'Your food is ready and your rider is heading to pickup.' 
+        : 'Your food is ready! We are currently matching you with a nearby rider.';
+    } else if (foodStatus === 'PREPARING') {
+      statusMessage = 'The restaurant is currently preparing your meal.';
+    } else if (foodStatus === 'ACCEPTED') {
+      statusMessage = 'Your order has been accepted by the restaurant.';
+    }
+
     const riderUser = order.shipment?.rider?.user;
     const riderFullName = riderUser 
       ? `${riderUser.firstName ?? ''} ${riderUser.lastName ?? ''}`.trim() 
@@ -327,6 +444,7 @@ export class FoodOrdersService {
         id: order.id,
         status: order.status,
         deliveryStatus: order.deliveryStatus,
+        statusMessage,
         subtotal: Number(order.subTotal ?? 0),
         deliveryFee: Number(order.deliveryFee ?? 0),
         serviceFee: Number(order.serviceFee ?? 0),
@@ -343,9 +461,18 @@ export class FoodOrdersService {
           latitude: order.merchant?.latitude,
           longitude: order.merchant?.longitude,
         },
-        items: order.items.map((item) => ({
+        items: (order.items as any[]).map((item) => ({
           ...item,
           price: Number(item.price),
+          customizationOptions: Array.isArray(item.customizationOptions) 
+            ? item.customizationOptions.map((opt: any) => ({
+                ...opt,
+                option: {
+                  ...opt.option,
+                  price: Number(opt.option?.price || 0)
+                }
+              }))
+            : []
         })),
         shipment: order.shipment ? {
           id: order.shipment.id,

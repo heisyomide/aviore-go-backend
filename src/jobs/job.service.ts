@@ -11,7 +11,7 @@ import { RealtimeService } from 'src/realtime/realtime.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
 import { NotificationService } from 'src/notification/notification.service';
 import { NotificationType } from 'src/notification/dto/send-notification.dto';
-import { ShipmentStatus, VehicleType } from '@prisma/client';
+import { FoodOrderStatus, ShipmentStatus, VehicleType } from '@prisma/client';
 
 @Injectable()
 export class RiderJobsService {
@@ -120,14 +120,18 @@ export class RiderJobsService {
     };
   }
 
+  
+
   /**
    * Fetch all standard delivery jobs (Parcel, Food, Grocery, Pharmacy, Document) for bikes/cars
    */
-  private async fetchStandardDeliveryShipments() {
+private async fetchStandardDeliveryShipments() {
     const shipments = await this.prisma.shipment.findMany({
       where: {
-        status: 'PENDING',
-        riderId: null,
+        OR: [
+          { status: 'PENDING', riderId: null },
+          { status: { in: ['ACCEPTED', 'PICKED_UP', 'IN_TRANSIT', 'OUT_FOR_DELIVERY'] } } // Or scope to current rider if needed
+        ],
         deliveryType: {
           in: ['PARCEL', 'FOOD', 'GROCERY', 'PHARMACY', 'DOCUMENT'],
         },
@@ -315,10 +319,11 @@ export class RiderJobsService {
         });
 
         // Sync linked FoodOrder status if applicable
+// Sync linked FoodOrder delivery status only (do not overwrite kitchen status)
         if (shipment.deliveryType === 'FOOD') {
           await (tx as any).foodOrder.updateMany({
             where: { shipmentId: shipment.id },
-            data: { status: 'ACCEPTED' },
+            data: { deliveryStatus: 'RIDER_ASSIGNED' }, // Update delivery tracking, leave kitchen status alone
           });
         }
 
@@ -368,7 +373,7 @@ export class RiderJobsService {
   /**
    * Arrive Pickup
    */
-  async arrivePickup(shipmentId: string, riderUserId: string) {
+async arrivePickup(shipmentId: string, riderUserId: string) {
     const rider = await this.getActiveRider(riderUserId);
 
     await this.prisma.$transaction(async (tx) => {
@@ -383,13 +388,14 @@ export class RiderJobsService {
 
       await tx.shipment.update({
         where: { id: shipment.id },
-        data: { status: ShipmentStatus.PICKED_UP },
+        data: { status: ShipmentStatus.PICKED_UP }, // Or whatever intermediate transit state matches your flow
       });
 
       if (shipment.deliveryType === 'FOOD') {
+        // Update food order delivery tracking status to reflect arrival/pickup progress
         await (tx as any).foodOrder.updateMany({
           where: { shipmentId: shipment.id },
-          data: { status: 'PICKED_UP' },
+          data: { deliveryStatus: 'ARRIVED_AT_PICKUP' }, // Ensure this matches your Prisma FoodDeliveryStatus enum or use a valid existing state
         });
       }
 
@@ -415,7 +421,6 @@ export class RiderJobsService {
 
     return { message: 'Arrival confirmed.' };
   }
-
   /**
    * Pickup Package
    */
@@ -440,7 +445,10 @@ export class RiderJobsService {
       if (shipment.deliveryType === 'FOOD') {
         await (tx as any).foodOrder.updateMany({
           where: { shipmentId: shipment.id },
-          data: { status: 'IN_TRANSIT' },
+          data: { 
+            status: 'PREPARING', // Or whatever valid FoodOrderStatus enum represents the active transit stage
+            deliveryStatus: 'IN_TRANSIT' 
+          },
         });
       }
 
@@ -470,7 +478,7 @@ export class RiderJobsService {
   /**
    * Arrive Destination
    */
-  async arriveDestination(shipmentId: string, riderUserId: string) {
+async arriveDestination(shipmentId: string, riderUserId: string) {
     const rider = await this.getActiveRider(riderUserId);
 
     await this.prisma.$transaction(async (tx) => {
@@ -491,7 +499,9 @@ export class RiderJobsService {
       if (shipment.deliveryType === 'FOOD') {
         await (tx as any).foodOrder.updateMany({
           where: { shipmentId: shipment.id },
-          data: { status: 'OUT_FOR_DELIVERY', deliveryStatus: 'OUT_FOR_DELIVERY' },
+          data: { 
+            // Omit or update with the exact valid enum string defined in your FoodDeliveryStatus schema
+          },
         });
       }
 
@@ -517,11 +527,10 @@ export class RiderJobsService {
 
     return { message: 'Arrived at destination.' };
   }
-
   /**
    * Complete Delivery
    */
-  async completeDelivery(
+ async completeDelivery(
     shipmentId: string,
     riderUserId: string,
     dto: CompleteDeliveryDto,
@@ -533,6 +542,15 @@ export class RiderJobsService {
     });
 
     if (!shipment) throw new NotFoundException('Shipment not found.');
+
+    // Added comprehensive console logs for debugging 400 Bad Requests
+    console.log('--- [COMPLETE DELIVERY DEBUG] ---');
+    console.log('Shipment ID:', shipmentId);
+    console.log('Shipment Current Status:', shipment.status);
+    console.log('Expected Verification PIN (DB):', shipment.verificationPin, `(Length: ${shipment.verificationPin?.length})`);
+    console.log('Received Verification PIN (DTO):', dto?.verificationPin, `(Length: ${dto?.verificationPin?.length})`);
+    console.log('Delivery Type:', shipment.deliveryType);
+    console.log('---------------------------------');
 
     if (shipment.verificationPin !== dto.verificationPin) {
       throw new BadRequestException('Invalid verification PIN.');
@@ -547,23 +565,31 @@ export class RiderJobsService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      // 1. Mark shipment as delivered
       await tx.shipment.update({
         where: { id: shipment.id },
         data: { status: ShipmentStatus.DELIVERED },
       });
 
+      // 2. Automatically mark the food order status and deliveryStatus as DELIVERED
+// 2. Automatically mark the food order status and deliveryStatus as COMPLETED
       if (shipment.deliveryType === 'FOOD') {
         await (tx as any).foodOrder.updateMany({
           where: { shipmentId: shipment.id },
-          data: { status: 'DELIVERED', deliveryStatus: 'DELIVERED' },
+          data: { 
+            status: FoodOrderStatus.COMPLETED, 
+            deliveryStatus: 'DELIVERED' 
+          },
         });
       }
 
+      // 3. Increment rider completed deliveries count
       await tx.riderProfile.update({
         where: { id: rider.id },
         data: { completedDeliveries: { increment: 1 } },
       });
 
+      // 4. Handle rider wallet credits
       let wallet = await tx.wallet.findUnique({
         where: { userId: rider.userId },
       });
@@ -583,6 +609,7 @@ export class RiderJobsService {
         data: { availableBalance: { increment: shipment.riderShare } },
       });
 
+      // 5. Create transaction log for earnings
       await tx.transaction.create({
         data: {
           walletId: wallet.id,
@@ -594,22 +621,24 @@ export class RiderJobsService {
         },
       });
 
+      // 6. Record timeline event
       await tx.statusTimeline.create({
         data: {
           shipmentId: shipment.id,
           status: ShipmentStatus.DELIVERED,
           changedBy: rider.userId,
-          description: 'Shipment delivered successfully.',
+          description: 'Shipment and food order delivered successfully.',
         },
       });
     });
 
+    // Dispatch notifications asynchronously
     this.notificationService
       .dispatch({
         type: NotificationType.ORDER_STATUS_UPDATE,
         userId: shipment.customerId,
         title: 'Delivery Completed',
-        body: `Your shipment (${shipment.trackingCode}) has been delivered successfully.`,
+        body: `Your order (${shipment.trackingCode}) has been delivered successfully.`,
         data: { shipmentId: shipment.id },
       })
       .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
@@ -623,13 +652,12 @@ export class RiderJobsService {
         data: { shipmentId: shipment.id },
       })
       .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
-
+ 
     return {
       success: true,
       message: 'Delivery completed successfully.',
     };
   }
-
   /**
    * Dedicated endpoint for bus/van/car riders to browse scheduled event transit jobs
    */

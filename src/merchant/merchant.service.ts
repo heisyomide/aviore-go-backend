@@ -5,6 +5,18 @@ import { PrismaService } from '../providers/database/prisma.service';
 export class MerchantService {
   constructor(private prisma: PrismaService) {}
 
+  private async ensureWallet(userId: string) {
+    return this.prisma.wallet.upsert({
+      where: { userId },
+      update: {},
+      create: {
+        userId,
+        availableBalance: 0,
+        pendingBalance: 0,
+      },
+    });
+  }
+
   async getProfile(userId: string) {
     const profile = await this.prisma.merchantProfile.findUnique({
       where: { userId },
@@ -27,7 +39,7 @@ export class MerchantService {
       coverUrl?: string;
     }
   ) {
-    return this.prisma.merchantProfile.upsert({
+    const profile = await this.prisma.merchantProfile.upsert({
       where: { userId },
       create: {
         userId,
@@ -52,6 +64,11 @@ export class MerchantService {
         onboardingStep: 2,
       },
     });
+
+    // Ensure wallet exists as soon as profile is initialized
+    await this.ensureWallet(userId);
+
+    return profile;
   }
 
   // Step 2 — Business Location & GPS Coords matching your exact schema fields
@@ -185,7 +202,7 @@ export class MerchantService {
       throw new BadRequestException('You must accept the merchant terms and policies to submit your application.');
     }
 
-    return this.prisma.merchantProfile.update({
+    const updatedProfile = await this.prisma.merchantProfile.update({
       where: { userId },
       data: {
         hasCac: data.hasCac ?? false,
@@ -198,5 +215,10 @@ export class MerchantService {
         isOnboardingComplete: true,
       },
     });
+
+    // Double-ensure wallet exists on completion
+    await this.ensureWallet(userId);
+
+    return updatedProfile;
   }
 }

@@ -11,13 +11,16 @@ import { HandoverService } from './handover.service';
 import { PricingModule } from 'src/pricing/pricing.module';
 import { DispatchModule } from 'src/dispatch/dispatch.module';
 import { PaymentsModule } from 'src/payments/payments.module';
+import { NotificationService } from 'src/notification/notification.service';
+import { NotificationModule } from 'src/notification/notification.module';
 
 @Module({
   imports: [
     HttpModule, // 👈 Required for NavigationService HttpService calls
     PricingModule, 
     PaymentsModule, 
-    DispatchModule
+    DispatchModule,
+    NotificationModule
   ],
   controllers: [ShipmentsController],
   providers: [
@@ -35,6 +38,7 @@ import { PaymentsModule } from 'src/payments/payments.module';
     PricingService, 
     WalletLedgerService, 
     HandoverService,
+  
   ],
 })
 export class ShipmentsModule {}

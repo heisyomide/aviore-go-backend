@@ -10,54 +10,66 @@ export class MerchantDashboardService {
   ) {}
 
 async getDashboardOverview(userId: string) {
-    const profile = await this.prisma.merchantProfile.findUnique({
-      where: { userId },
-    });
+  const profile = await this.prisma.merchantProfile.findUnique({
+    where: { userId },
+  });
 
-    if (!profile) throw new NotFoundException('Merchant profile not found');
+  if (!profile) throw new NotFoundException('Merchant profile not found');
 
-    // Fetch unified FoodOrders along with their linked Shipments and items
-    const foodOrders = await (this.prisma as any).foodOrder.findMany({
-      where: { merchantId: profile.id },
-      include: {
-        items: true,
-        shipment: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-    });
+  const foodOrders = await (this.prisma as any).foodOrder.findMany({
+    where: { merchantId: profile.id },
+    include: {
+      items: true,
+      shipment: true,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+  });
 
-    const todayOrdersCount = foodOrders.length;
-    const todayRevenue = foodOrders.reduce((sum, ord) => sum + Number(ord.totalPrice || 0), 0);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
 
-    return {
-      storeName: profile.businessName,
-      isStoreOpen: profile.isOpen ?? true,
-      metrics: {
-        ordersCount: todayOrdersCount,
-        revenue: todayRevenue,
-        rating: 4.8,
-      },
-      pipelineCounts: {
-        new: foodOrders.filter((o: any) => o.status === 'PENDING').length,
-        preparing: foodOrders.filter((o: any) => o.status === 'ACCEPTED' || o.status === 'PREPARING').length,
-        ready: foodOrders.filter((o: any) => o.status === 'READY_FOR_PICKUP').length,
-        delivery: foodOrders.filter((o: any) => o.status === 'OUT_FOR_DELIVERY' || o.deliveryStatus === 'OUT_FOR_DELIVERY').length,
-      },
-      orders: foodOrders.map((ord: any) => ({
+  const todayOrders = foodOrders.filter((ord: any) => new Date(ord.createdAt) >= todayStart);
+  const ordersCount = todayOrders.length;
+  // Revenue strictly from merchant share fallback calculation
+  const revenue = todayOrders.reduce(
+    (sum, ord) => sum + Number(ord.merchantShare ?? (Number(ord.subTotal || 0) * 0.9)),
+    0,
+  );
+
+  return {
+    storeName: profile.businessName,
+    isStoreOpen: profile.isOpen ?? true,
+    metrics: {
+      ordersCount,
+      revenue,
+      rating: 4.8,
+    },
+    pipelineCounts: {
+      new: foodOrders.filter((o: any) => o.status === 'PENDING').length,
+      preparing: foodOrders.filter((o: any) => o.status === 'ACCEPTED' || o.status === 'PREPARING').length,
+      ready: foodOrders.filter((o: any) => o.status === 'READY_FOR_PICKUP' || o.status === 'ARRIVED_AT_HUB' || o.status === 'READY').length,
+      delivery: foodOrders.filter((o: any) => o.status === 'OUT_FOR_DELIVERY' || o.deliveryStatus === 'OUT_FOR_DELIVERY').length,
+    },
+    orders: foodOrders.map((ord: any) => {
+      const netMerchantShare = Number(ord.merchantShare ?? (Number(ord.subTotal || 0) * 0.9));
+      return {
         id: ord.id,
         orderNumber: ord.orderNumber,
         createdAt: ord.createdAt,
-        totalPrice: ord.totalPrice,
+        subTotal: netMerchantShare, // Overwritten to reflect net payout
+        merchantShare: netMerchantShare,
+        grossSubTotal: Number(ord.subTotal || 0),
+        totalPrice: Number(ord.totalPrice || 0), // Customer paid total (retained for reference)
         status: ord.status,
         deliveryStatus: ord.deliveryStatus,
         deliveryAddress: ord.deliveryAddress,
         items: ord.items,
         shipment: ord.shipment,
-      })),
-    };
-  }
-
+      };
+    }),
+  };
+}
 private getCurrentDayName(): string {
     const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const now = new Date();

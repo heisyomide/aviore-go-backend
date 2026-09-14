@@ -502,4 +502,75 @@ async getCustomerOrderById(orderId: string, userId: string) {
       },
     };
   }
+
+async getActiveCustomerOrder(userId: string) {
+  const activeOrder = await (this.prisma as any).foodOrder.findFirst({
+    where: {
+      customerId: userId,
+      status: {
+        in: [
+          FoodOrderStatus.PENDING,
+          FoodOrderStatus.ACCEPTED,
+          FoodOrderStatus.PREPARING,
+          FoodOrderStatus.READY,
+        ],
+      },
+    },
+    include: {
+      merchant: { select: { businessName: true } },
+      shipment: {
+        include: {
+          rider: {
+            include: {
+              user: { select: { firstName: true, lastName: true, avatarUrl: true } },
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!activeOrder) {
+    return { success: true, order: null };
+  }
+
+  const foodStatus = activeOrder.status;
+  const shipmentStatus = activeOrder.shipment?.status;
+  let statusText = 'Your order is being processed 🍳';
+
+  if (shipmentStatus === 'OUT_FOR_DELIVERY' || shipmentStatus === 'IN_TRANSIT') {
+    statusText = 'Your order is on the way 🚴';
+  } else if (foodStatus === FoodOrderStatus.READY) {
+    statusText = 'Food is ready for delivery/pickup 📦';
+  } else if (foodStatus === FoodOrderStatus.PREPARING) {
+    statusText = 'Chef is preparing your meal 🔥';
+  } else if (foodStatus === FoodOrderStatus.ACCEPTED) {
+    statusText = 'Restaurant accepted your order ✨';
+  } else if (foodStatus === FoodOrderStatus.PENDING) {
+    statusText = 'Waiting for restaurant confirmation ⏳';
+  }
+
+  const riderUser = activeOrder.shipment?.rider?.user;
+  const riderName = riderUser?.firstName ? `${riderUser.firstName} ${riderUser.lastName ?? ''}`.trim() : 'Assigned Rider';
+  const riderImage =
+    riderUser?.avatarUrl ||
+    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80';
+
+  const distanceKm = activeOrder.shipment?.distanceKm ?? 3.0;
+  const estimatedMins = activeOrder.shipment?.estimatedMinutes ?? 15;
+
+  return {
+    success: true,
+    order: {
+      id: activeOrder.id,
+      restaurantName: activeOrder.merchant?.businessName || 'Restaurant',
+      riderName,
+      riderImage,
+      distanceAway: `${Number(distanceKm).toFixed(1)} km away`,
+      eta: `Arriving in ~${estimatedMins} min`,
+      statusText,
+    },
+  };
+}
 }

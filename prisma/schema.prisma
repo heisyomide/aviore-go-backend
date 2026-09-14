@@ -79,7 +79,7 @@ model FoodOrder {
   cancelledAt          DateTime?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
-
+ merchantShare Decimal @db.Decimal(10, 2) @default(0)
   items FoodOrderItem[]
 
   @@index([customerId])

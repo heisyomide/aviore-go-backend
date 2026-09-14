@@ -1,10 +1,58 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
-import { TransactionType, LedgerCategory, ShipmentStatus } from '@prisma/client';
-
+import {
+  TransactionType,
+  LedgerCategory,
+  ShipmentStatus,
+  Prisma,
+} from '@prisma/client';
 @Injectable()
 export class WalletLedgerService {
   constructor(private prisma: PrismaService) {}
+
+async creditWallet(params: {
+    userId: string;
+    amount: number | Prisma.Decimal;
+    reference: string;
+    description: string;
+    category?: LedgerCategory;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.findUnique({
+        where: { userId: params.userId },
+      });
+
+      if (!wallet) {
+        throw new BadRequestException('Wallet infrastructure not found for user.');
+      }
+
+      const decimalAmount = new Prisma.Decimal(params.amount);
+
+      const updatedWallet = await tx.wallet.update({
+        where: { id: wallet.id },
+        data: {
+          availableBalance: { increment: decimalAmount },
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          walletId: wallet.id,
+          amount: decimalAmount,
+          type: TransactionType.CREDIT,
+          category: params.category || LedgerCategory.RIDER_EARNINGS,
+          referenceCode: `CREDIT-${params.reference}-${Date.now()}`,
+          description: params.description,
+        },
+      });
+
+      return {
+        success: true,
+        newBalance: updatedWallet.availableBalance,
+      };
+    });
+  }
+
 
   /**
    * Locks delivery payment from customer wallet instantly when job is accepted by a rider

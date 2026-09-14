@@ -28,6 +28,24 @@ import { FoodPricingService } from 'src/pricing/food-pricing.service';
 
 const QRCode = require('qrcode');
 
+export interface PaymentMetaPayload {
+  type?: 'EVENT_BOOKING' | 'FOOD_CART_CHECKOUT' | string;
+  shipmentId?: string;
+  bookingId?: string;
+  eventId?: string;
+  routeId?: string;
+  pickupPointId?: string;
+  tripId?: string;
+  cartId?: string;
+  merchantId?: string;
+  customerId?: string;
+  amountPaid?: number;
+  subtotal?: number;
+  deliveryFee?: number;
+  serviceFee?: number;
+  distanceKm?: number;
+}
+
 @Injectable()
 export class FlutterwaveService {
   private readonly logger = new Logger(FlutterwaveService.name);
@@ -61,6 +79,17 @@ private readonly foodPricingService: FoodPricingService,
       'Content-Type': 'application/json',
     };
   }
+
+
+private async resolveCustomerId(explicitId: string | null | undefined, email?: string): Promise<string> {
+  if (explicitId) return explicitId;
+  if (email) {
+    const foundUser = await this.prisma.user.findUnique({ where: { email } });
+    if (foundUser) return foundUser.id;
+  }
+  throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
+}
+
 
   private async activateAndDispatchShipment(shipmentId: string) {
     if (!shipmentId) return;
@@ -148,260 +177,63 @@ private readonly foodPricingService: FoodPricingService,
 // constructor(..., private readonly foodPricingService: FoodPricingService) {}
 
 async initializePayment(dto: InitializePaymentDto, userId?: string) {
-const { 
-      shipmentId, 
-      bookingId, 
-      eventId, 
-      routeId, 
-      pickupPointId, 
-      tripId, 
-      amount, 
-      email, 
-      name, 
-      redirectUrl, 
-      cartCheckout,
-      merchantId: dtoMerchantId
-    } = dto as any;
+  const { 
+    shipmentId, bookingId, eventId, routeId, pickupPointId, 
+    tripId, amount, email, name, redirectUrl, cartCheckout, merchantId: dtoMerchantId
+  } = dto as any;
 
-    let rawTotal = 0;
-    let resolvedCustomerId: string | null = userId || null;
-    let description = '';
-    let metaPayload: Record<string, any> = {};
-    let pricingDetails: any = null;
-    let merchant: any = null; // Track merchant scope across branches for subaccount lookup
+  let rawTotal = 0;
+  let resolvedCustomerId: string | null = userId || null;
+  let description = '';
+  let metaPayload: PaymentMetaPayload = {};
+  let pricingDetails: any = null;
+  let merchant: any = null;
 
-    if (shipmentId) {
-      const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
-      if (!shipment) throw new NotFoundException('SHIPMENT_NOT_FOUND');
-
-      rawTotal = Number(shipment.totalPrice);
-      resolvedCustomerId = shipment.customerId;
-      description = `Payment for Shipment #${shipment.id.slice(-6).toUpperCase()}`;
-      metaPayload = { shipmentId: shipment.id };
-    } else if (bookingId) {
-      const booking = await this.prisma.eventBooking.findUnique({ where: { id: bookingId } });
-      if (!booking) throw new NotFoundException('BOOKING_NOT_FOUND');
-
-      rawTotal = Number(booking.amountPaid || 0);
-      resolvedCustomerId = booking.customerId;
-      description = `Payment for Transit Booking #${booking.id.slice(-6).toUpperCase()}`;
-      metaPayload = { bookingId: booking.id };
-    } else if (eventId && routeId && tripId) {
-      const route = await this.prisma.eventRoute.findUnique({ where: { id: routeId } });
-      if (!route) throw new NotFoundException('ROUTE_NOT_FOUND');
-
-      rawTotal = Number(amount || route.price);
-      description = `Payment for Event Transit Booking`;
-
-      if (!resolvedCustomerId && email) {
-        const foundUser = await this.prisma.user.findUnique({ where: { email } });
-        if (foundUser) resolvedCustomerId = foundUser.id;
-      }
-
-      if (!resolvedCustomerId) {
-        throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
-      }
-
-      metaPayload = {
-        type: 'EVENT_BOOKING',
-        eventId,
-        routeId,
-        pickupPointId: pickupPointId || '',
-        tripId,
-        amountPaid: rawTotal,
-        customerId: resolvedCustomerId,
-      };
-    } else if (cartCheckout) {
-      if (!resolvedCustomerId && email) {
-        const foundUser = await this.prisma.user.findUnique({ where: { email } });
-        if (foundUser) resolvedCustomerId = foundUser.id;
-      }
-
-      if (!resolvedCustomerId) {
-        throw new BadRequestException('CUSTOMER_IDENTIFIER_REQUIRED');
-      }
-
-      if (!dtoMerchantId) {
-        throw new BadRequestException('MERCHANT_ID_REQUIRED_FOR_CART');
-      }
-
-      const dbCart = await this.prisma.cart.findUnique({
-        where: {
-          userId_merchantId: {
-            userId: resolvedCustomerId,
-            merchantId: dtoMerchantId,
-          },
-        },
-        include: { 
-          items: { 
-            include: { 
-              foodItem: true,
-              customizationOptions: {
-                include: { option: true }
-              }
-            } 
-          } 
-        },
-      });
-
-      if (!dbCart || !dbCart.items || dbCart.items.length === 0) {
-        throw new BadRequestException('CART_IS_EMPTY');
-      }
-
-      const resolvedMerchantId = dbCart.merchantId;
-
-      merchant = await this.prisma.merchantProfile.findUnique({
-        where: { id: resolvedMerchantId },
-      });
-
-      if (!merchant || merchant.latitude == null || merchant.longitude == null) {
-        throw new BadRequestException('MERCHANT_COORDINATES_REQUIRED');
-      }
-
-      const defaultAddress = await this.prisma.savedAddress.findFirst({
-        where: { userId: resolvedCustomerId, isDefault: true },
-      }) || await this.prisma.savedAddress.findFirst({
-        where: { userId: resolvedCustomerId },
-      });
-
-      if (!defaultAddress || defaultAddress.latitude == null || defaultAddress.longitude == null) {
-        throw new BadRequestException('DEFAULT_ADDRESS_WITH_COORDINATES_REQUIRED');
-      }
-
-      // FIX: Calculate accurate food subtotal including item base price AND custom options/add-ons
-      const foodSubtotal = dbCart.items.reduce((sum, item) => {
-        const itemBase = Number(item.foodItem.price) * item.quantity;
-        const customizationSum = (item.customizationOptions || []).reduce((optAcc: number, customOpt: any) => {
-          return optAcc + (Number(customOpt.option?.price || 0) * Number(customOpt.quantity || 1));
-        }, 0);
-        return sum + itemBase + customizationSum;
-      }, 0);
-
-      pricingDetails = await this.foodPricingService.calculateFoodOrderPricing({
-        pickupLat: Number(merchant.latitude),
-        pickupLng: Number(merchant.longitude),
-        destinationLat: Number(defaultAddress.latitude),
-        destinationLng: Number(defaultAddress.longitude),
-        foodSubtotal,
-      });
-
-      rawTotal = pricingDetails.totalPayable;
-
-      description = `Payment for Food Cart Order (${dbCart.items.length} items)`;
-      metaPayload = { 
-        type: 'FOOD_CART_CHECKOUT', 
-        customerId: resolvedCustomerId,
-        cartId: dbCart.id,
-        merchantId: resolvedMerchantId,
-        subtotal: pricingDetails.subtotal,
-        deliveryFee: pricingDetails.deliveryFee,
-        serviceFee: pricingDetails.splits.foodPlatformSpeed || pricingDetails.splits.foodPlatformShare,
-        distanceKm: pricingDetails.distanceKm,
-        amountPaid: rawTotal 
-      };
-    } else {
-      throw new BadRequestException('Invalid payment parameters provided');
-    }
-
-    if (!rawTotal || rawTotal <= 0) {
-      throw new BadRequestException('PAYMENT_AMOUNT_INVALID');
-    }
-
-    const txRef = `AVR-${randomUUID()}`;
-    const frontendUrl = this.config.get<string>('FRONTEND_URL') || process.env.FRONTEND_URL || 'http://localhost:3000';
-    const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
-
-    let subaccountsPayload: any = undefined;
-    if (metaPayload.type === 'FOOD_CART_CHECKOUT' && merchant && (merchant as any).flutterwaveSubaccountId) {
-      subaccountsPayload = [
-        {
-          id: (merchant as any).flutterwaveSubaccountId,
-        }
-      ];
-    }
-
-    const payload = {
-      tx_ref: txRef,
-      amount: rawTotal,
-      currency: 'NGN',
-      redirect_url: finalRedirectUrl,
-      customer: {
-        email: email || 'customer@aviorego.com.ng',
-        name: name || 'Valued Customer',
-      },
-      customizations: {
-        title: 'Pay AVIORÈ',
-        description,
-      },
-      meta: metaPayload,
-      ...(subaccountsPayload ? { subaccounts: subaccountsPayload } : {}),
+  if (shipmentId) {
+    const shipment = await this.prisma.shipment.findUnique({ where: { id: shipmentId } });
+    if (!shipment) throw new NotFoundException('SHIPMENT_NOT_FOUND');
+    rawTotal = Number(shipment.totalPrice);
+    resolvedCustomerId = shipment.customerId;
+    description = `Payment for Shipment #${shipment.id.slice(-6).toUpperCase()}`;
+    metaPayload = { shipmentId: shipment.id };
+  } else if (bookingId) {
+    const booking = await this.prisma.eventBooking.findUnique({ where: { id: bookingId } });
+    if (!booking) throw new NotFoundException('BOOKING_NOT_FOUND');
+    rawTotal = Number(booking.amountPaid || 0);
+    resolvedCustomerId = booking.customerId;
+    description = `Payment for Transit Booking #${booking.id.slice(-6).toUpperCase()}`;
+    metaPayload = { bookingId: booking.id };
+  } else if (eventId && routeId && tripId) {
+    const route = await this.prisma.eventRoute.findUnique({ where: { id: routeId } });
+    if (!route) throw new NotFoundException('ROUTE_NOT_FOUND');
+    rawTotal = Number(amount || route.price);
+    description = `Payment for Event Transit Booking`;
+    resolvedCustomerId = await this.resolveCustomerId(resolvedCustomerId, email);
+    metaPayload = {
+      type: 'EVENT_BOOKING', eventId, routeId, 
+      pickupPointId: pickupPointId || '', tripId, 
+      amountPaid: rawTotal, customerId: resolvedCustomerId,
     };
+  } else if (cartCheckout) {
+    resolvedCustomerId = await this.resolveCustomerId(resolvedCustomerId, email);
+    if (!dtoMerchantId) throw new BadRequestException('MERCHANT_ID_REQUIRED_FOR_CART');
 
-    try {
-      const response = await axios.post('https://api.flutterwave.com/v3/payments', payload, { headers: this.headers });
-      const paymentLink = response.data?.data?.link;
-      if (!paymentLink) throw new Error('PAYMENT_LINK_NOT_GENERATED');
-
-      return { link: paymentLink };
-    } catch (error: any) {
-      const flwErrorMessage = error.response?.data?.message || error.message;
-      this.logger.error(`PAYMENT_INIT_ERROR: ${flwErrorMessage}`);
-      throw new InternalServerErrorException(`PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`);
-    }
-  }
-
-public async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
-    const customerId = meta.customerId;
-    const cartId = meta.cartId;
-    const merchantId = meta.merchantId;
-    const totalPaid = Number(paymentData.amount);
-    const expectedAmount = Number(meta.amountPaid);
-
-    if (Math.abs(totalPaid - expectedAmount) > 1) {
-      this.logger.error(`[PAYMENT_MISMATCH] Paid amount (${totalPaid}) does not match expected authoritative amount (${expectedAmount}) for tx_ref ${paymentData.tx_ref}`);
-      return;
-    }
-
-    if (!customerId || customerId === 'guest' || !merchantId) {
-      this.logger.warn(`[CART_CHECKOUT] Skipping order creation: missing customerId or merchantId for tx_ref ${paymentData.tx_ref}`);
-      return;
-    }
-
-    const cart = await this.prisma.cart.findUnique({
-      where: { id: cartId },
-      include: { 
-        items: { 
-          include: { 
-            foodItem: true,
-            customizationOptions: { include: { option: true } }
-          } 
-        } 
-      },
+    const dbCart = await this.prisma.cart.findUnique({
+      where: { userId_merchantId: { userId: resolvedCustomerId, merchantId: dtoMerchantId } },
+      include: { items: { include: { foodItem: true, customizationOptions: { include: { option: true } } } } },
     });
+    if (!dbCart?.items?.length) throw new BadRequestException('CART_IS_EMPTY');
 
-    if (!cart || cart.items.length === 0) {
-      this.logger.warn(`[CART_CHECKOUT] Cart empty or not found during fulfillment for customer ${customerId}`);
-      return;
-    }
+    merchant = await this.prisma.merchantProfile.findUnique({ where: { id: dbCart.merchantId } });
+    if (!merchant?.latitude || !merchant?.longitude) throw new BadRequestException('MERCHANT_COORDINATES_REQUIRED');
 
-    const [merchant, customer, defaultAddress] = await Promise.all([
-      this.prisma.merchantProfile.findUnique({ where: { id: merchantId } }),
-      this.prisma.user.findUnique({ where: { id: customerId } }),
-      this.prisma.savedAddress.findFirst({ where: { userId: customerId, isDefault: true } }),
-    ]);
+    const defaultAddress = await this.prisma.savedAddress.findFirst({
+      where: { userId: resolvedCustomerId },
+      orderBy: { isDefault: 'desc' },
+    });
+    if (!defaultAddress?.latitude || !defaultAddress?.longitude) throw new BadRequestException('DEFAULT_ADDRESS_WITH_COORDINATES_REQUIRED');
 
-    if (!merchant || merchant.latitude == null || merchant.longitude == null) {
-      this.logger.error(`[CART_CHECKOUT] Merchant or coordinates missing for merchantId ${merchantId}`);
-      return;
-    }
-
-    if (!defaultAddress || defaultAddress.latitude == null || defaultAddress.longitude == null) {
-      this.logger.error(`[CART_CHECKOUT] Default delivery address or coordinates missing for customer ${customerId}`);
-      return;
-    }
-
-    // Recalculate accurate pricing and splits via FoodPricingService
-    const foodSubtotal = cart.items.reduce((sum, item) => {
+    const foodSubtotal = dbCart.items.reduce((sum, item) => {
       const itemBase = Number(item.foodItem.price) * item.quantity;
       const customizationSum = (item.customizationOptions || []).reduce((optAcc: number, customOpt: any) => {
         return optAcc + (Number(customOpt.option?.price || 0) * Number(customOpt.quantity || 1));
@@ -409,89 +241,197 @@ public async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
       return sum + itemBase + customizationSum;
     }, 0);
 
-    const pricingResult = this.foodPricingService.calculateFoodOrderPricing({
-      pickupLat: Number(merchant.latitude),
-      pickupLng: Number(merchant.longitude),
-      destinationLat: Number(defaultAddress.latitude),
-      destinationLng: Number(defaultAddress.longitude),
+    pricingDetails = await this.foodPricingService.calculateFoodOrderPricing({
+      pickupLat: Number(merchant.latitude), pickupLng: Number(merchant.longitude),
+      destinationLat: Number(defaultAddress.latitude), destinationLng: Number(defaultAddress.longitude),
       foodSubtotal,
     });
 
-    const orderNumber = `AVR-FOOD-${randomUUID().substring(0, 8).toUpperCase()}`;
-    const trackingCode = `TRK-${randomUUID().substring(0, 8).toUpperCase()}`;
+    rawTotal = pricingDetails.totalPayable;
+    description = `Payment for Food Cart Order (${dbCart.items.length} items)`;
+    metaPayload = { 
+      type: 'FOOD_CART_CHECKOUT', customerId: resolvedCustomerId, 
+      cartId: dbCart.id, merchantId: dbCart.merchantId, 
+      subtotal: pricingDetails.subtotal, deliveryFee: pricingDetails.deliveryFee, 
+      serviceFee: pricingDetails.splits.foodPlatformShare, distanceKm: pricingDetails.distanceKm, 
+      amountPaid: rawTotal 
+    };
+  } else {
+    throw new BadRequestException('Invalid payment parameters provided');
+  }
 
-    const deliveryAddress = defaultAddress 
-      ? `${defaultAddress.street}, ${defaultAddress.city}, ${defaultAddress.state}` 
-      : customer?.streetAddress || 'Default Customer Address';
-    const pickupAddress = merchant.address || 'Merchant Location';
-    const recipientName = `${customer?.firstName || 'Customer'} ${customer?.lastName || ''}`.trim();
-    const recipientPhone = customer?.phoneNumber || '0000000000';
+  if (!rawTotal || rawTotal <= 0) throw new BadRequestException('PAYMENT_AMOUNT_INVALID');
 
-    await this.prisma.$transaction(async (tx) => {
-      const shipment = await tx.shipment.create({
-        data: {
-          trackingCode,
-          customerId,
-          merchantId,
-          status: ShipmentStatus.PENDING,
-          tier: DeliveryTier.STANDARD,
-          deliveryType: DeliveryType.FOOD,
-          packageCategory: PackageCategory.SMALL_PARCEL,
-          weightRange: WeightRange.UNDER_1KG,
-          regionType: RegionType.INTRA_CITY,
-          pickupAddress,
-          pickupLat: Number(merchant.latitude),
-          pickupLng: Number(merchant.longitude),
-          destinationAddress: deliveryAddress,
-          destinationLat: Number(defaultAddress.latitude),
-          destinationLng: Number(defaultAddress.longitude),
-          recipient: recipientName,
-          recipientPhone,
-          verificationPin: Math.floor(1000 + Math.random() * 9000).toString(),
-          baseFee: pricingResult.breakdown.baseFee,
-          pickupDistFee: 0,
-          deliveryDistFee: pricingResult.breakdown.deliveryDistanceFee,
-          extraCharges: pricingResult.splits.foodPlatformShare,
-          totalPrice: totalPaid,
-          riderShare: pricingResult.splits.riderShare,
-          platformShare: pricingResult.splits.totalPlatformRevenue,
-          distanceKm: pricingResult.distanceKm,
-          estimatedMinutes: pricingResult.estimatedMinutes,
-        },
-      });
+  const txRef = `AVR-${randomUUID()}`;
+  const frontendUrl = this.config.get<string>('FRONTEND_URL') || process.env.FRONTEND_URL || 'http://localhost:3000';
+  const finalRedirectUrl = redirectUrl || `${frontendUrl}/payment/verify`;
 
-      await tx.foodOrder.create({
-        data: {
-          orderNumber,
-          customerId,
-          merchantId,
-          shipmentId: shipment.id,
-          status: FoodOrderStatus.PENDING,
-          deliveryStatus: FoodDeliveryStatus.NOT_ASSIGNED,
-          subTotal: pricingResult.subtotal,
-          deliveryFee: pricingResult.deliveryFee,
-          serviceFee: pricingResult.splits.foodPlatformShare,
-          totalPrice: totalPaid,
-          deliveryAddress,
-          deliveryLat: Number(defaultAddress.latitude),
-          deliveryLng: Number(defaultAddress.longitude),
-          items: {
-            create: cart.items.map((item: any) => ({
-              foodItemId: item.foodItemId,
-              name: item.foodItem?.name || 'Food Item',
-              price: Number(item.foodItem?.price || 0),
-              quantity: item.quantity,
-              selectedAddOns: item.selectedAddOns ?? undefined,
-            })),
-          },
-        },
-      });
+  const subaccountsPayload = (metaPayload.type === 'FOOD_CART_CHECKOUT' && merchant?.flutterwaveSubaccountId)
+    ? [{ id: merchant.flutterwaveSubaccountId }]
+    : undefined;
 
-      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+  const payload = {
+    tx_ref: txRef, amount: rawTotal, currency: 'NGN', redirect_url: finalRedirectUrl,
+    customer: { email: email || 'customer@aviorego.com.ng', name: name || 'Valued Customer' },
+    customizations: { title: 'Pay AVIORÈ', description },
+    meta: metaPayload,
+    ...(subaccountsPayload ? { subaccounts: subaccountsPayload } : {}),
+  };
+
+  try {
+    const response = await axios.post('https://api.flutterwave.com/v3/payments', payload, { headers: this.headers });
+    const paymentLink = response.data?.data?.link;
+    if (!paymentLink) throw new Error('PAYMENT_LINK_NOT_GENERATED');
+    return { link: paymentLink };
+  } catch (error: any) {
+    const flwErrorMessage = error.response?.data?.message || error.message;
+    this.logger.error(`PAYMENT_INIT_ERROR: ${flwErrorMessage}`);
+    throw new InternalServerErrorException(`PAYMENT_INITIALIZATION_FAILED: ${flwErrorMessage}`);
+  }
+}
+
+public async handleSuccessfulFoodCartCheckout(meta: PaymentMetaPayload, paymentData: any) {
+  const { customerId, cartId, merchantId, amountPaid } = meta;
+  const totalPaid = Number(paymentData.amount);
+  const expectedAmount = Number(amountPaid);
+  const flwTxId = String(paymentData.id);
+
+  if (Math.abs(totalPaid - expectedAmount) > 1) {
+    this.logger.error(`[PAYMENT_MISMATCH] Paid amount (${totalPaid}) does not match expected (${expectedAmount}) for tx_ref ${paymentData.tx_ref}`);
+    return;
+  }
+
+  if (!customerId || customerId === 'guest' || !merchantId || !cartId) {
+    this.logger.warn(`[CART_CHECKOUT] Skipping order creation: missing required meta fields for tx_ref ${paymentData.tx_ref}`);
+    return;
+  }
+
+  const paymentRecord = await (this.prisma as any).paymentLog?.findUnique?.({ where: { flwTxId } });
+  if (paymentRecord?.processed) {
+    this.logger.warn(`[CART_CHECKOUT] Duplicate webhook/verify call ignored for flwTxId ${flwTxId}`);
+    return;
+  }
+
+  const cart = await this.prisma.cart.findUnique({
+    where: { id: cartId },
+    include: { items: { include: { foodItem: true, customizationOptions: { include: { option: true } } } } },
+  });
+  if (!cart?.items.length) {
+    this.logger.warn(`[CART_CHECKOUT] Cart empty or already cleared for customer ${customerId}`);
+    return;
+  }
+
+  const [merchant, customer, defaultAddress] = await Promise.all([
+    this.prisma.merchantProfile.findUnique({ where: { id: merchantId } }),
+    this.prisma.user.findUnique({ where: { id: customerId } }),
+    this.prisma.savedAddress.findFirst({ where: { userId: customerId, isDefault: true } }) || 
+      this.prisma.savedAddress.findFirst({ where: { userId: customerId } }),
+  ]);
+
+  if (!merchant?.latitude || !merchant?.longitude || !defaultAddress?.latitude || !defaultAddress?.longitude) {
+    this.logger.error(`[CART_CHECKOUT] Missing merchant or address coordinates for customer ${customerId}`);
+    return;
+  }
+
+  const foodSubtotal = cart.items.reduce((sum, item) => {
+    const itemBase = Number(item.foodItem.price) * item.quantity;
+    const customizationSum = (item.customizationOptions || []).reduce((optAcc: number, customOpt: any) => {
+      return optAcc + (Number(customOpt.option?.price || 0) * Number(customOpt.quantity || 1));
+    }, 0);
+    return sum + itemBase + customizationSum;
+  }, 0);
+
+  const pricingResult = this.foodPricingService.calculateFoodOrderPricing({
+    pickupLat: Number(merchant.latitude), pickupLng: Number(merchant.longitude),
+    destinationLat: Number(defaultAddress.latitude), destinationLng: Number(defaultAddress.longitude),
+    foodSubtotal,
+  });
+
+  const subTotalVal = Number(pricingResult.subtotal);
+  const merchantShareVal = subTotalVal * 0.90; // 90% payout, 10% platform food commission
+
+  const orderNumber = `AVR-FOOD-${randomUUID().substring(0, 8).toUpperCase()}`;
+  const trackingCode = `TRK-${randomUUID().substring(0, 8).toUpperCase()}`;
+  const deliveryAddress = `${defaultAddress.street}, ${defaultAddress.city}, ${defaultAddress.state}`;
+  const recipientName = `${customer?.firstName || 'Customer'} ${customer?.lastName || ''}`.trim();
+
+  // Ensure merchant user wallet exists before entering transaction scope
+  const merchantWallet = await this.prisma.wallet.upsert({
+    where: { userId: merchant.userId },
+    update: {},
+    create: {
+      userId: merchant.userId,
+      availableBalance: 0,
+      pendingBalance: 0,
+    },
+  });
+
+  await this.prisma.$transaction(async (tx) => {
+    const activeCart = await tx.cartItem.count({ where: { cartId: cart.id } });
+    if (activeCart === 0) throw new Error('CART_ALREADY_PROCESSED');
+
+    const shipment = await tx.shipment.create({
+      data: {
+        trackingCode, customerId, merchantId, status: ShipmentStatus.PENDING,
+        tier: DeliveryTier.STANDARD, deliveryType: DeliveryType.FOOD,
+        packageCategory: PackageCategory.SMALL_PARCEL, weightRange: WeightRange.UNDER_1KG,
+        regionType: RegionType.INTRA_CITY, pickupAddress: merchant.address || 'Merchant Location',
+        pickupLat: Number(merchant.latitude), pickupLng: Number(merchant.longitude),
+        destinationAddress: deliveryAddress, destinationLat: Number(defaultAddress.latitude),
+        destinationLng: Number(defaultAddress.longitude), recipient: recipientName,
+        recipientPhone: customer?.phoneNumber || '0000000000',
+        verificationPin: Math.floor(1000 + Math.random() * 9000).toString(),
+        baseFee: pricingResult.breakdown.baseFee, pickupDistFee: 0,
+        deliveryDistFee: pricingResult.breakdown.deliveryDistanceFee,
+        extraCharges: pricingResult.splits.foodPlatformShare, totalPrice: totalPaid,
+        riderShare: pricingResult.splits.riderShare, platformShare: pricingResult.splits.totalPlatformRevenue,
+        distanceKm: pricingResult.distanceKm, estimatedMinutes: pricingResult.estimatedMinutes,
+      },
     });
 
-    this.logger.log(`[FOOD_ORDER_CREATED] Structured Food Order ${orderNumber} successfully placed for customer ${customerId}`);
-  }
+    await tx.foodOrder.create({
+      data: {
+        orderNumber, customerId, merchantId, shipmentId: shipment.id,
+        status: FoodOrderStatus.PENDING, deliveryStatus: FoodDeliveryStatus.NOT_ASSIGNED,
+        subTotal: subTotalVal,
+        merchantShare: merchantShareVal,
+        deliveryFee: pricingResult.deliveryFee,
+        serviceFee: pricingResult.splits.foodPlatformShare, totalPrice: totalPaid,
+        deliveryAddress, deliveryLat: Number(defaultAddress.latitude), deliveryLng: Number(defaultAddress.longitude),
+        items: {
+          create: cart.items.map((item: any) => ({
+            foodItemId: item.foodItemId, name: item.foodItem?.name || 'Food Item',
+            price: Number(item.foodItem?.price || 0), quantity: item.quantity,
+            selectedAddOns: item.selectedAddOns ?? undefined,
+          })),
+        },
+      },
+    });
+
+    // Credit merchant wallet share upon confirmed order checkout
+    await tx.wallet.update({
+      where: { id: merchantWallet.id },
+      data: {
+        availableBalance: { increment: merchantShareVal },
+      },
+    });
+
+ await tx.transaction.create({
+      data: {
+        walletId: merchantWallet.id,
+        type: 'CREDIT',
+        description: `Payout share for food order ${orderNumber}`,
+        referenceCode: orderNumber,
+        amount: merchantShareVal,
+      } as any,
+    });
+    
+
+    await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+  });
+
+  this.logger.log(`[FOOD_ORDER_CREATED] Structured Food Order ${orderNumber} (merchant share: ₦${merchantShareVal.toFixed(2)}) successfully placed for customer ${customerId}`);
+}
   
  async verifyPayment(transactionId: string) {
     try {
@@ -503,9 +443,9 @@ public async handleSuccessfulFoodCartCheckout(meta: any, paymentData: any) {
       );
 
       const paymentData = response.data.data;
-      const isSuccessful = paymentData.status === 'successful';
+      
       const meta = paymentData.meta || {};
-
+      const isSuccessful = ['successful', 'success'].includes(paymentData.status?.toLowerCase());
       const { shipmentId, bookingId, eventId, routeId, pickupPointId, tripId, customerId: metaCustomerId, type } = meta;
 
       if (shipmentId) {

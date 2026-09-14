@@ -1,12 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../providers/database/prisma.service';
-import { Prisma, ShipmentStatus, PaymentStatus } from '@prisma/client';
+import { Prisma, ShipmentStatus, PaymentStatus, IdentityStatus } from '@prisma/client';
 import { CreateShipmentDto } from './dto/create-shipment.dto';
 import { PricingService } from '../pricing/pricing.service';
 import { DispatchService } from 'src/dispatch/dispatch.service';
 import { PaymentsService } from '../payments/payments.service';
 import { NavigationService } from './navigation.service';
-
+import { NotificationService } from 'src/notification/notification.service';
+import { WalletLedgerService } from './wallet-ledger.service';
 @Injectable()
 export class ShipmentsService {
   constructor(
@@ -15,6 +16,8 @@ export class ShipmentsService {
     private readonly dispatchService: DispatchService,
     private readonly paymentsService: PaymentsService,
     private readonly navigationService: NavigationService,
+    private readonly notificationService: NotificationService,
+    private readonly walletLedgerService: WalletLedgerService,
   ) {}
 
   private async generateTrackingCode(): Promise<string> {
@@ -54,8 +57,10 @@ export class ShipmentsService {
     });
 
     const totalPayable = pricingResult.totalDeliveryFee;
-    const platformShare = totalPayable * 0.2;
-    const riderShare = totalPayable * 0.8;
+const numericTotal = Number(pricingResult.totalDeliveryFee);
+const merchantShare = dto.deliveryType === 'FOOD' ? numericTotal * 0.5 : 0; 
+const platformShare = numericTotal * 0.2;
+const riderShare = numericTotal * 0.8;
 
     const shipmentData = {
       trackingCode,
@@ -101,6 +106,7 @@ export class ShipmentsService {
       totalPrice: new Prisma.Decimal(totalPayable),
       riderShare: new Prisma.Decimal(riderShare),
       platformShare: new Prisma.Decimal(platformShare),
+      merchantShare: new Prisma.Decimal(merchantShare),
 
       distanceKm: pricingResult.distanceKm,
       estimatedMinutes: pricingResult.estimatedMinutes,
@@ -123,6 +129,31 @@ export class ShipmentsService {
     const shipment = await this.prisma.shipment.create({
       data: shipmentData,
     });
+
+    const eligibleRiders = await this.prisma.user.findMany({
+      where: {
+        role: 'RIDER',
+        status: IdentityStatus.VERIFIED,
+      },
+      select: { id: true },
+    });
+
+    if (eligibleRiders.length > 0) {
+      await Promise.all(
+        eligibleRiders.map((rider) =>
+          this.notificationService.dispatch({
+            type: 'RIDER_ASSIGNED' as any,
+            userId: rider.id,
+            title: '📦 New Shipment Available',
+            body: `New request created near ${shipment.pickupAddress}. Tap to view.`,
+            data: {
+              shipmentId: shipment.id,
+              trackingCode: shipment.trackingCode,
+            },
+          }),
+        ),
+      );
+    }
 
     return shipment;
   }
@@ -262,7 +293,7 @@ export class ShipmentsService {
   /**
    * Verify Delivery PIN & Trigger Automatic Escrow Release
    */
-  async verifyDeliveryPin(shipmentId: string, inputPin: string, riderUserId: string) {
+async verifyDeliveryPin(shipmentId: string, inputPin: string, riderUserId: string) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
     });
@@ -301,6 +332,18 @@ export class ShipmentsService {
       shipmentId,
       riderUserId,
     );
+
+    // 4. Credit merchant wallet via ledger service (if merchant exists & share is tracked)
+    // Cast/fallback safely if merchantShare field isn't generated on Prisma client yet:
+    const merchantShareVal = (shipment as any).merchantShare;
+    if (shipment.merchantId && merchantShareVal && Number(merchantShareVal) > 0) {
+      await this.walletLedgerService.creditWallet({
+        userId: shipment.merchantId,
+        amount: Number(merchantShareVal),
+        reference: shipmentId,
+        description: `Merchant payout for completed delivery ${shipment.trackingCode}`,
+      });
+    }
 
     return {
       success: true,

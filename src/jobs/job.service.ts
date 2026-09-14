@@ -12,7 +12,7 @@ import { DispatchService } from 'src/dispatch/dispatch.service';
 import { NotificationService } from 'src/notification/notification.service';
 import { NotificationType } from 'src/notification/dto/send-notification.dto';
 import { FoodOrderStatus, ShipmentStatus, VehicleType } from '@prisma/client';
-
+import { FoodDeliveryStatus } from '@prisma/client'; // 👈 import enum
 @Injectable()
 export class RiderJobsService {
   constructor(
@@ -373,54 +373,56 @@ private async fetchStandardDeliveryShipments() {
   /**
    * Arrive Pickup
    */
+
+
 async arrivePickup(shipmentId: string, riderUserId: string) {
-    const rider = await this.getActiveRider(riderUserId);
+  const rider = await this.getActiveRider(riderUserId);
+  let updatedShipment: any;
 
-    await this.prisma.$transaction(async (tx) => {
-      const shipment = await tx.shipment.findFirst({
-        where: { id: shipmentId, riderId: rider.id },
-      });
-
-      if (!shipment) throw new NotFoundException('Shipment not found.');
-      if (shipment.status !== ShipmentStatus.ACCEPTED) {
-        throw new BadRequestException('Shipment must be ACCEPTED before arriving at pickup.');
-      }
-
-      await tx.shipment.update({
-        where: { id: shipment.id },
-        data: { status: ShipmentStatus.PICKED_UP }, // Or whatever intermediate transit state matches your flow
-      });
-
-      if (shipment.deliveryType === 'FOOD') {
-        // Update food order delivery tracking status to reflect arrival/pickup progress
-        await (tx as any).foodOrder.updateMany({
-          where: { shipmentId: shipment.id },
-          data: { deliveryStatus: 'ARRIVED_AT_PICKUP' }, // Ensure this matches your Prisma FoodDeliveryStatus enum or use a valid existing state
-        });
-      }
-
-      await tx.statusTimeline.create({
-        data: {
-          shipmentId: shipment.id,
-          status: ShipmentStatus.PICKED_UP,
-          changedBy: rider.userId,
-          description: 'Rider arrived at pickup location.',
-        },
-      });
-
-      this.notificationService
-        .dispatch({
-          type: NotificationType.ORDER_STATUS_UPDATE,
-          userId: shipment.customerId,
-          title: 'Rider at Pickup Location',
-          body: `Your rider has arrived at the pickup location for shipment ${shipment.trackingCode}.`,
-          data: { shipmentId: shipment.id },
-        })
-        .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+  await this.prisma.$transaction(async (tx) => {
+    const shipment = await tx.shipment.findFirst({
+      where: { id: shipmentId, riderId: rider.id },
     });
 
-    return { message: 'Arrival confirmed.' };
-  }
+    if (!shipment) throw new NotFoundException('Shipment not found.');
+    if (shipment.status !== ShipmentStatus.ACCEPTED) {
+      throw new BadRequestException('Shipment must be ACCEPTED before arriving at pickup.');
+    }
+
+    updatedShipment = await tx.shipment.update({
+      where: { id: shipment.id },
+      data: { status: ShipmentStatus.PICKED_UP },
+    });
+
+    if (shipment.deliveryType === 'FOOD') {
+      await (tx as any).foodOrder.updateMany({
+        where: { shipmentId: shipment.id },
+        data: { deliveryStatus: FoodDeliveryStatus.PICKED_UP }, // Mapped to closest matching state in your enum
+      });
+    }
+
+    await tx.statusTimeline.create({
+      data: {
+        shipmentId: shipment.id,
+        status: ShipmentStatus.PICKED_UP,
+        changedBy: rider.userId,
+        description: 'Rider arrived at pickup location.',
+      },
+    });
+  });
+
+  this.notificationService
+    .dispatch({
+      type: NotificationType.ORDER_STATUS_UPDATE,
+      userId: updatedShipment.customerId,
+      title: 'Rider at Pickup Location',
+      body: `Your rider has arrived at the pickup location for shipment ${updatedShipment.trackingCode}.`,
+      data: { shipmentId: updatedShipment.id },
+    })
+    .catch((err) => console.error('[NOTIFICATION_ERROR]', err));
+
+  return { message: 'Arrival confirmed.' };
+}
   /**
    * Pickup Package
    */

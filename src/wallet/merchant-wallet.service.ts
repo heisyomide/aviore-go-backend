@@ -8,7 +8,7 @@ import { PrismaService } from '../providers/database/prisma.service';
 export class MerchantWalletService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getWalletSummary(userId: string) {
+  private async resolveWallet(userId: string) {
     const merchant = await this.prisma.merchantProfile.findUnique({
       where: { userId },
     });
@@ -17,37 +17,55 @@ export class MerchantWalletService {
       throw new NotFoundException('Merchant profile not found.');
     }
 
-    // Fetch the actual wallet tied to the merchant user
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { userId },
+    const wallet = await this.prisma.wallet.findFirst({
+      where: {
+        OR: [
+          { userId },
+          // fallback query matching relation fields if schema uses userId/merchant relations
+        ],
+      },
     });
 
-    const availableBalance = wallet ? Number(wallet.availableBalance) : 0;
-    const pendingBalance = wallet ? Number(wallet.pendingBalance) : 0;
+    return { merchant, wallet };
+  }
 
-    // Calculate today's earnings from the transaction table or orders
+  async getWalletSummary(userId: string) {
+    const { wallet } = await this.resolveWallet(userId);
+
+    const availableBalance = wallet ? Number(wallet.availableBalance ?? 0) : 0;
+    const pendingBalance = wallet ? Number(wallet.pendingBalance ?? 0) : 0;
+
+    if (!wallet) {
+      return {
+        availableBalance: 0,
+        todayEarnings: 0,
+        earningsGrowth: '+0%',
+        pendingBalance: 0,
+        totalEarned: 0,
+      };
+    }
+
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    const todayTransactions = wallet ? await this.prisma.transaction.findMany({
+    const todayTransactions = await this.prisma.transaction.findMany({
       where: {
         walletId: wallet.id,
         type: 'CREDIT',
         createdAt: { gte: startOfToday },
       },
-    }) : [];
+    });
 
-    const todayEarnings = todayTransactions.reduce((sum, tx) => sum + Number(tx.amount), 0);
+    const todayEarnings = todayTransactions.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
 
-    // Total earned can be calculated from all credit transactions
-    const allCredits = wallet ? await this.prisma.transaction.findMany({
+    const allCredits = await this.prisma.transaction.findMany({
       where: {
         walletId: wallet.id,
         type: 'CREDIT',
       },
-    }) : [];
+    });
 
-    const totalEarned = allCredits.reduce((sum, tx) => sum + Number(tx.amount), 0);
+    const totalEarned = allCredits.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
 
     return {
       availableBalance,
@@ -59,9 +77,7 @@ export class MerchantWalletService {
   }
 
   async getTransactions(userId: string) {
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { userId },
-    });
+    const { wallet } = await this.resolveWallet(userId);
 
     if (!wallet) {
       return [];
@@ -70,17 +86,20 @@ export class MerchantWalletService {
     const transactions = await this.prisma.transaction.findMany({
       where: { walletId: wallet.id },
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: 50,
     });
 
-    return transactions.map((tx) => ({
-      id: tx.id,
-      type: tx.type,
-      category: tx.category,
-      description: tx.description,
-      referenceCode: tx.referenceCode,
-      date: new Date(tx.createdAt).toLocaleDateString() + ' ' + new Date(tx.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      amount: Number(tx.amount),
-    }));
+    return transactions.map((tx) => {
+      const dateObj = new Date(tx.createdAt);
+      return {
+        id: tx.id,
+        type: tx.type,
+        category: tx.category || 'GENERAL',
+        description: tx.description || `${tx.type} transaction`,
+        referenceCode: tx.referenceCode || tx.id,
+        date: `${dateObj.toLocaleDateString()} ${dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        amount: Number(tx.amount || 0),
+      };
+    });
   }
 }

@@ -6,7 +6,7 @@ import { NotificationType } from '../notification/dto/send-notification.dto';
 import { PrismaService } from '../providers/database/prisma.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
-import { IdentityStatus, UserRole,MerchantType } from '@prisma/client';
+import { IdentityStatus, UserRole,MerchantType,KycStatus } from '@prisma/client';
 
 interface BaseRegisterDto {
   email: string;
@@ -202,38 +202,52 @@ if (user) {
     return null;
   }
 
-  async login(user: any) {
-    const payload = { sub: user.id, email: user.email, role: user.role };
-    const accessToken = this.jwtService.sign(payload);
+ async login(user: any) {
+  const payload = { sub: user.id, email: user.email, role: user.role };
+  const accessToken = this.jwtService.sign(payload);
 
-    this.notificationService
-      .dispatch({
-        type: NotificationType.LOGIN_ALERT,
-        userId: user.id,
-        email: user.email,
-        title: 'New Account Login',
-        body: `A new login to your account was detected on ${new Date().toLocaleString()}.`,
-      })
-      .catch((err) => {
-        console.error('[AUTH NOTIFICATION FAILED]', err);
-      });
+  this.notificationService
+    .dispatch({
+      type: NotificationType.LOGIN_ALERT,
+      userId: user.id,
+      email: user.email,
+      title: 'New Account Login',
+      body: `A new login to your account was detected on ${new Date().toLocaleString()}.`,
+    })
+    .catch((err) => {
+      console.error('[AUTH NOTIFICATION FAILED]', err);
+    });
 
-    const sanitizedPhone =
-      user.phoneNumber && !user.phoneNumber.startsWith('PENDING_')
-        ? user.phoneNumber
-        : '';
+  const sanitizedPhone =
+    user.phoneNumber && !user.phoneNumber.startsWith('PENDING_')
+      ? user.phoneNumber
+      : '';
 
-    return {
-      access_token: accessToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName ?? '',
-        lastName: user.lastName ?? '',
-        phoneNumber: sanitizedPhone,
-        role: user.role,
-        status: user.status,
-      },
-    };
+  // Fetch true merchant approval/onboarding status if role is MERCHANT
+// Fetch true merchant approval/onboarding status if role is MERCHANT
+  let effectiveStatus = user.status;
+  if (user.role === 'MERCHANT') {
+    const profile = await this.prisma.merchantProfile.findUnique({
+      where: { userId: user.id },
+      select: { isOnboardingComplete: true, kycStatus: true },
+    });
+    // Treat as pending until onboarding finishes and KYC is verified/approved
+  if (!profile || !profile.isOnboardingComplete || profile.kycStatus !== KycStatus.APPROVED) {
+  effectiveStatus = 'PENDING';
+}
   }
+
+  return {
+    access_token: accessToken,
+    user: {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName ?? '',
+      lastName: user.lastName ?? '',
+      phoneNumber: sanitizedPhone,
+      role: user.role,
+      status: effectiveStatus,
+    },
+  };
+}
 }

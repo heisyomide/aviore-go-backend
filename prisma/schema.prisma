@@ -609,8 +609,8 @@ model Withdrawal {
   id String @id @default(cuid())
 
   walletId String
-
-  riderId String
+  riderId  String?
+  merchantId String?
 
   amount Decimal @db.Decimal(12, 2)
 
@@ -634,9 +634,9 @@ model Withdrawal {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  wallet Wallet @relation(fields: [walletId], references: [id])
-
-  rider RiderProfile @relation(fields: [riderId], references: [id])
+  wallet   Wallet           @relation(fields: [walletId], references: [id])
+  rider    RiderProfile?    @relation(fields: [riderId], references: [id])
+  merchant MerchantProfile? @relation(fields: [merchantId], references: [id])
 }
 
 enum PackageCategory {
@@ -714,7 +714,7 @@ model MerchantProfile {
   cuisineType  String?
   foodOrders   FoodOrder[]
   phone        String?
-
+  withdrawals Withdrawal[]
   // Step 3: Owner / Contact KYC Information
   ownerFullName       String?
   ownerPhone          String?

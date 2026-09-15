@@ -18,6 +18,7 @@ import { ShipmentStatus, BoardingStatus, PaymentStatus,
   WeightRange, 
   RegionType, 
   FoodOrderStatus, 
+  LedgerCategory,
   FoodDeliveryStatus } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
@@ -416,15 +417,16 @@ public async handleSuccessfulFoodCartCheckout(meta: PaymentMetaPayload, paymentD
       },
     });
 
- await tx.transaction.create({
-      data: {
-        walletId: merchantWallet.id,
-        type: 'CREDIT',
-        description: `Payout share for food order ${orderNumber}`,
-        referenceCode: orderNumber,
-        amount: merchantShareVal,
-      } as any,
-    });
+await tx.transaction.create({
+  data: {
+    walletId: "b2bd6c05-a322-4815-8d4d-a07234c2ffdc",
+    type: "CREDIT",
+    category: LedgerCategory.DELIVERY_PAYMENT,
+    description: "Payout share for food order AVR-FOOD-487DD0B3",
+    referenceCode: "AVR-FOOD-487DD0B3",
+    amount: 180,
+  }
+});
     
 
     await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
@@ -923,7 +925,7 @@ async handleWebhook(signature: string, payload: any) {
         this.notificationService
           .dispatch({
             type: NotificationType.WITHDRAWAL_UPDATE,
-            userId: withdrawal.riderId,
+           userId: withdrawal.riderId ?? undefined,
             title: 'Withdrawal Completed',
             body: `Your payout of ₦${withdrawal.amount} to ${withdrawal.bankName} has been completed successfully.`,
             data: { withdrawalId: withdrawal.id },
@@ -947,7 +949,7 @@ async handleWebhook(signature: string, payload: any) {
         this.notificationService
           .dispatch({
             type: NotificationType.WITHDRAWAL_UPDATE,
-            userId: withdrawal.riderId,
+            userId: withdrawal.riderId ?? undefined,
             title: 'Withdrawal Failed',
             body: `Your withdrawal request of ₦${withdrawal.amount} failed and funds have been returned to your available balance.`,
             data: { withdrawalId: withdrawal.id },

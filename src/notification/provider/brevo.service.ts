@@ -26,19 +26,21 @@ export class BrevoService {
 
       // Map each recipient cleanly into individual 'to' entries for proper envelope headers,
       // or batch if volume is high. Brevo accepts an array of destination objects in 'to'.
-      return await this.brevoClient.transactionalEmails.sendTransacEmail({
-        subject,
-        htmlContent,
-        sender: {
-          name: 'Aviorè Go',
-          email: fromEmail,
-        },
-        replyTo: {
-          email: replyToEmail,
-          name: 'Aviorè Go Support',
-        },
-        to: to.map((email) => ({ email })),
-      });
+// Pick a dummy or your support email as the primary 'to', and put everyone else in 'bcc'
+return await this.brevoClient.transactionalEmails.sendTransacEmail({
+  subject,
+  htmlContent,
+  sender: {
+    name: 'Aviorè Go',
+    email: fromEmail,
+  },
+  replyTo: {
+    email: replyToEmail,
+    name: 'Aviorè Go Support',
+  },
+  to: [{ email: fromEmail }], // Sent from you, to you officially
+  bcc: to.map((email) => ({ email })), // Hidden from everyone else
+});
     } catch (error: any) {
       throw new InternalServerErrorException(
         `Brevo broadcast failed: ${error?.message || 'Unknown error'}`,

@@ -705,6 +705,40 @@ model FoodSubcategory {
   @@map("food_subcategories")
 }
 
+enum CampaignCategory {
+  FOOD
+  SHIPMENT
+  EVENT_LOGISTICS
+  PROMOTION
+  GENERAL_BRAND
+}
+
+enum CampaignFrequency {
+  ONCE
+  DAILY
+  WEEKLY
+}
+
+model NotificationCampaign {
+  id            String             @id @default(uuid())
+  title         String
+  body          String
+  category      CampaignCategory   @default(GENERAL_BRAND)
+  audience      String             @default("ALL") // "ALL", "CUSTOMER", "RIDER", "MERCHANT", "ORGANIZER"
+  startDate     DateTime           @default(now())
+  endDate       DateTime?
+  scheduledTime String             // Format "HH:mm" (e.g., "08:00", "14:00", "20:00")
+  frequency     CampaignFrequency  @default(DAILY)
+  isActive      Boolean            @default(true)
+  
+  // Analytics
+  sentCount     Int                @default(0)
+  clickedCount  Int                @default(0)
+  
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+}
+
 model MerchantProfile {
   id           String       @id @default(uuid())
   userId       String       @unique

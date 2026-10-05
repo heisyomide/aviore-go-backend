@@ -36,12 +36,44 @@ import { StorefrontModule } from './storefront/storefront.module';
 import { CategoriesModule } from './categories/categories.module';
 import { CartModule } from './cart/cart.module';
 import { FoodOrdersModule } from './orders/order.module';
-
+import { EngagementModule } from './engagement/engagement.module'; // 👈 Added
 
 @Module({
-  imports: [DatabaseModule, FoodOrdersModule, MerchantModule,  CartModule, CategoriesModule, StorefrontModule, OrganizerModule, EventsModule, DatabaseModule, WebSocketModule, DisputeModule, LandmarksModule, NotificationModule, HealthModule, UploadsModule, AdminModule, RiderOnboardingModule, RealtimeModule, ProfileModule, RiderJobsModule, EarningsModule, 
-    RiderDashboardModule, FlutterwaveModule , PricingModule,UsersModule, 
-    PaymentsModule, TrackingModule, AuthModule, RiderProfileModule, WalletModule, ShipmentsModule,ScheduleModule.forRoot(), RiderModule,],
+  imports: [
+    DatabaseModule,
+    ScheduleModule.forRoot(),
+    FoodOrdersModule,
+    MerchantModule,
+    CartModule,
+    CategoriesModule,
+    StorefrontModule,
+    OrganizerModule,
+    EventsModule,
+    WebSocketModule,
+    DisputeModule,
+    LandmarksModule,
+    NotificationModule,
+    HealthModule,
+    UploadsModule,
+    AdminModule,
+    RiderOnboardingModule,
+    RealtimeModule,
+    ProfileModule,
+    RiderJobsModule,
+    EarningsModule,
+    RiderDashboardModule,
+    FlutterwaveModule,
+    PricingModule,
+    UsersModule,
+    PaymentsModule,
+    TrackingModule,
+    AuthModule,
+    RiderProfileModule,
+    WalletModule,
+    ShipmentsModule,
+    RiderModule,
+    EngagementModule, // 👈 Added here
+  ],
   controllers: [],
   providers: [UsersService, AuthService],
 })

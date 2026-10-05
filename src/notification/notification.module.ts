@@ -5,6 +5,7 @@ import { NotificationService } from './notification.service';
 import { ResendService } from './provider/resend.service';
 import { BrevoService } from './provider/brevo.service';
 import { PushNotificationService } from './provider/push.service';
+import { EngagementService } from 'src/engagement/engagement.service';
 
 @Module({
   imports: [ConfigModule], // 👈 Added here to supply ConfigService
@@ -15,6 +16,6 @@ import { PushNotificationService } from './provider/push.service';
     BrevoService,
     PushNotificationService,
   ],
-  exports: [NotificationService],
+  exports: [NotificationService , PushNotificationService, ],
 })
 export class NotificationModule {}

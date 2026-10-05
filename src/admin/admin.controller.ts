@@ -87,6 +87,23 @@ export class AdminController {
     return { records, meta: { total, page: Number(page), limit: Number(limit) } };
   }
 
+  // Explicitly scoped route instead of a dangerous global wildcard (:id)
+  @Get('shipments/:id')
+  async getShipmentDetails(@Param('id') id: string) {
+    try {
+      const shipment = await this.cacheService.findDetailsById(id);
+      if (!shipment) {
+        throw new NotFoundException(`Shipment matrix with target key matching "${id}" not found.`);
+      }
+      return shipment;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new InternalServerErrorException('Fatal failure during backend manifest ingestion workflow.');
+    }
+  }
+
   /**
    * 3. RIDER ONBOARDING & PIPELINE
    */
@@ -442,7 +459,7 @@ export class AdminController {
   }
 
   /**
-   * 9. MERCHANT MANAGEMENT (DEDICATED PREFIX TO PREVENT COLLISION WITH WILDCARDS)
+   * 9. MERCHANT MANAGEMENT
    */
   @Get('merchants')
   async getAllMerchants() {
@@ -460,24 +477,5 @@ export class AdminController {
     @Body('kycStatus') kycStatus: KycStatus,
   ) {
     return this.adminMerchantService.updateMerchantStatus(id, kycStatus);
-  }
-
-  /**
-   * 10. WILDCARD CATCH-ALLS (MUST REMAIN AT THE VERY BOTTOM OF THE FILE)
-   */
-  @Get(':id')
-  async getShipmentDetails(@Param('id') id: string) {
-    try {
-      const shipment = await this.cacheService.findDetailsById(id);
-      if (!shipment) {
-        throw new NotFoundException(`Shipment matrix with target key matching "${id}" not found.`);
-      }
-      return shipment;
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new InternalServerErrorException('Fatal failure during backend manifest ingestion workflow.');
-    }
   }
 }
